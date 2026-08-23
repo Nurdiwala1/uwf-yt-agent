@@ -1,0 +1,6 @@
+-- Run in Supabase SQL Editor. Apply RLS policies appropriate to your authenticated dashboard users.
+create type public.job_state as enum ('queued','researching','scripting','generating_voice','generating_visuals','assembling','thumbnail','quality_check','uploading','scheduled','published','failed');
+create table public.content_jobs (id uuid primary key default gen_random_uuid(), title text not null, topic text not null, format text not null check (format in ('short','long')), state public.job_state not null default 'queued', scheduled_for timestamptz not null, attempts integer not null default 0, error text, youtube_video_id text, created_at timestamptz not null default now());
+create table public.job_logs (id uuid primary key default gen_random_uuid(), job_id uuid not null references public.content_jobs(id) on delete cascade, level text not null check (level in ('info','error')), message text not null, created_at timestamptz not null default now());
+create table public.youtube_connections (id uuid primary key default gen_random_uuid(), channel_id text, refresh_token text not null, connected_at timestamptz not null default now());
+create index content_jobs_schedule_idx on public.content_jobs(scheduled_for); create index job_logs_job_idx on public.job_logs(job_id, created_at desc);
