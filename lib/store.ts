@@ -15,6 +15,7 @@ export const store = {
   get: (id: string) => db().jobs.find((j) => j.id === id),
   create: (input: Pick<ContentJob, "title" | "topic" | "format" | "scheduledFor">) => { const job: ContentJob = { ...input, id: crypto.randomUUID(), state: "queued", createdAt: new Date().toISOString(), attempts: 0 }; db().jobs.push(job); return job; },
   update: (id: string, state: JobState, error?: string) => { const job = store.get(id); if (!job) return undefined; job.state = state; job.error = error; if (state === "scheduled" || state === "published") job.attempts++; return job; },
+  // Patch arbitrary live-pipeline fields without pretending a stage succeeded.
   patch: (id: string, patch: Partial<ContentJob>) => { const job = store.get(id); if (!job) return undefined; Object.assign(job, patch); return job; },
   logs: (jobId?: string) => db().logs.filter((log) => !jobId || log.jobId === jobId),
   log: (jobId: string, message: string, level: JobLog["level"] = "info") => { db().logs.unshift({ id: crypto.randomUUID(), jobId, message, level, createdAt: new Date().toISOString() }); },
