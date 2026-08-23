@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { Dashboard } from "./dashboard";
 import { store } from "@/lib/store";
-import { getYoutubeChannelStats } from "@/lib/youtube";
+import { getYoutubeAnalytics, getYoutubeChannelStats } from "@/lib/youtube";
 
 export const dynamic = "force-dynamic";
 
@@ -12,10 +12,16 @@ export default async function Page() {
 
   let youtubeConnected = false;
   let channelStats = null;
+  let youtubeAnalytics = null;
   if (refreshToken && oauthConfigured) {
     try {
       channelStats = await getYoutubeChannelStats(refreshToken);
       youtubeConnected = true;
+      try {
+        youtubeAnalytics = await getYoutubeAnalytics(refreshToken);
+      } catch {
+        youtubeAnalytics = null;
+      }
     } catch {
       youtubeConnected = false;
     }
@@ -28,6 +34,7 @@ export default async function Page() {
       configured={oauthConfigured}
       youtubeConnected={youtubeConnected}
       channelStats={channelStats}
+      youtubeAnalytics={youtubeAnalytics}
     />
   );
 }
