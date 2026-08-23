@@ -4,12 +4,15 @@ const key = () => {
 };
 
 export async function startVideo(prompt: string, format: "short" | "long") {
-  const seconds = format === "short" ? "12" : "20";
-  const size = format === "short" ? "720x1280" : "1280x720";
+  const form = new FormData();
+  form.append("model", process.env.VIDEO_PROVIDER === "sora-2-pro" ? "sora-2-pro" : "sora-2");
+  form.append("prompt", prompt);
+  form.append("seconds", format === "short" ? "12" : "20");
+  form.append("size", format === "short" ? "720x1280" : "1280x720");
   const response = await fetch("https://api.openai.com/v1/videos", {
     method: "POST",
-    headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: process.env.VIDEO_PROVIDER === "sora-2-pro" ? "sora-2-pro" : "sora-2", prompt, seconds, size }),
+    headers: { Authorization: `Bearer ${key()}` },
+    body: form,
   });
   if (!response.ok) throw new Error(`Video generation request failed (${response.status}): ${await response.text()}`);
   const data = await response.json();
