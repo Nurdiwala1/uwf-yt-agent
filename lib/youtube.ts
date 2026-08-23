@@ -48,7 +48,7 @@ export async function getYoutubeChannelStats(refreshToken: string): Promise<Yout
   return {
     channelId: channel.id,
     title: channel.snippet.title ?? "YouTube channel",
-    thumbnail: channel.snippet.thumbnails?.default?.url,
+    thumbnail: channel.snippet.thumbnails?.default?.url ?? undefined,
     subscriberCount: Number(channel.statistics.subscriberCount ?? 0),
     viewCount: Number(channel.statistics.viewCount ?? 0),
     videoCount: Number(channel.statistics.videoCount ?? 0),
