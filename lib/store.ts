@@ -11,7 +11,7 @@ const seedJob = (): ContentJob => ({
   title: "Smart Investing: Today’s Crypto Setup",
   topic: "Investment education",
   format,
-  state: "researching",
+  state: "queued",
   scheduledFor: dailySlots(now)[0].toISOString(),
   createdAt: now.toISOString(),
   attempts: 0,
@@ -19,15 +19,15 @@ const seedJob = (): ContentJob => ({
 
 const memory = () => (global.uwfStore ??= {
   jobs: [seedJob()],
-  logs: [{ id: "log-1", jobId: seedJob().id, level: "info", message: "Research workflow started.", createdAt: now.toISOString() }],
+  logs: [{ id: "log-1", jobId: seedJob().id, level: "info", message: "Publishing job is ready to run.", createdAt: now.toISOString() }],
 });
 
 async function ensureDbSeed() {
   const jobs = await db.jobs.list();
-  if (jobs.length) return jobs;
+  if (jobs.length) return;
   const job = seedJob();
   await db.jobs.insert(job);
-  await db.logs.insert({ id: crypto.randomUUID(), jobId: job.id, level: "info", message: "Research workflow started.", createdAt: new Date().toISOString() });
+  await db.logs.insert({ id: crypto.randomUUID(), jobId: job.id, level: "info", message: "Publishing job is ready to run.", createdAt: new Date().toISOString() });
 }
 
 export const store = {
