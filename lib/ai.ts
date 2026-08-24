@@ -13,6 +13,8 @@ type GenerateOptions = {
   webSearch?: boolean;
   json?: boolean;
   modelName?: string;
+  timeoutMs?: number;
+  maxTokens?: number;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -102,6 +104,7 @@ async function requestGroq(input: string, options: GenerateOptions) {
     messages: [{ role: "user", content: input }],
   };
 
+  if (options.maxTokens) body.max_completion_tokens = options.maxTokens;
   if (options.json) body.response_format = { type: "json_object" };
   if (options.webSearch && model.startsWith("groq/compound")) {
     body.compound_custom = { tools: { enabled_tools: ["web_search", "visit_website"] } };
@@ -114,7 +117,7 @@ async function requestGroq(input: string, options: GenerateOptions) {
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
-  });
+  }, options.timeoutMs ?? 45_000);
 
   if (!response.ok) throw new Error(`Groq request failed (${response.status}): ${await response.text()}`);
   return parseResponseText(await response.json());
@@ -129,6 +132,7 @@ async function requestOpenRouter(input: string, options: GenerateOptions) {
     messages: [{ role: "user", content: input }],
   };
 
+  if (options.maxTokens) body.max_tokens = options.maxTokens;
   if (options.json) body.response_format = { type: "json_object" };
 
   const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
@@ -140,7 +144,7 @@ async function requestOpenRouter(input: string, options: GenerateOptions) {
       "X-Title": "UWF YT Agent",
     },
     body: JSON.stringify(body),
-  });
+  }, options.timeoutMs ?? 45_000);
 
   if (!response.ok) {
     throw new Error(`OpenRouter request failed (${response.status}): ${await response.text()}`);
@@ -165,7 +169,7 @@ async function requestOllama(input: string, options: GenerateOptions) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }, 90_000);
+  }, options.timeoutMs ?? 90_000);
 
   if (!response.ok) throw new Error(`Ollama request failed (${response.status}): ${await response.text()}`);
   return parseResponseText(await response.json());
@@ -197,7 +201,7 @@ async function generateContent(input: string, options: GenerateOptions = {}) {
         const message = error instanceof Error ? error.message : String(error);
         errors.push(`${provider}: ${message}`);
 
-        const retryable = /\b(429|500|502|503|504)\b|quota|rate.?limit|resource.?exhausted|timeout/i.test(message);
+        const retryable = /\b(429|500|502|503|504)\b|quota|rate.?limit|resource.?exhausted|timeout|aborted/i.test(message);
         if (!retryable || attempt === maxAttempts - 1) break;
 
         await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
@@ -209,10 +213,25 @@ async function generateContent(input: string, options: GenerateOptions = {}) {
 }
 
 export async function researchTopic(topic: string, format: "short" | "long") {
-  return generateContent(
-    `Research this YouTube topic for UWF: ${topic}. Format: ${format}. Verify current information where useful. Return a concise factual research brief with key facts, recent developments, important numbers/dates, and source names. Do not invent facts.`,
-    { webSearch: true },
-  );
+  const prompt = `Research this UWF YouTube topic: ${topic}. Format: ${format}. Return a concise factual research brief with key facts, important numbers/dates, likely recent developments, and source names. Keep it under 700 words. Do not invent facts.`;
+
+  // Research is the first pipeline stage and must never consume the whole Vercel
+  // function window. Prefer one fast live web-search attempt, then immediately
+  // fall back to the normal Groq model instead of trying multiple 45s providers.
+  if (process.env.GROQ_API_KEY) {
+    try {
+      return await requestGroq(prompt, { webSearch: true, timeoutMs: 20_000, maxTokens: 900 });
+    } catch {
+      return requestGroq(prompt, {
+        webSearch: false,
+        modelName: process.env.GROQ_FAST_MODEL || process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+        timeoutMs: 15_000,
+        maxTokens: 900,
+      });
+    }
+  }
+
+  return generateContent(prompt, { webSearch: false, timeoutMs: 20_000, maxTokens: 900 });
 }
 
 export async function buildContent(
