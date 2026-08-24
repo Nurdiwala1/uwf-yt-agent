@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ContentJob, JobLog } from "@/lib/types";
 import type { YoutubeAnalytics, YoutubeChannelStats } from "@/lib/youtube";
 
@@ -13,28 +13,109 @@ const states = (...values: JobState[]) => values;
 function compact(value: number) { return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value); }
 function hours(value: number) { return value < 10 ? value.toFixed(1) : compact(value); }
 function changePercent(current: number, previous: number) { if (previous === 0) return current > 0 ? "+100%" : "0%"; const change = ((current - previous) / previous) * 100; return `${change >= 0 ? "+" : ""}${change.toFixed(0)}%`; }
+function isTerminal(job: ContentJob) { return ["scheduled", "published", "failed"].includes(job.state); }
 function stageStatus(job: ContentJob | null, index: number): PipelineStatus {
   if (!job) return "pending";
-  if (job.state === "published") return "done";
-  const complete = [doneByState.includes(job.state), doneByState.includes(job.state), states("generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), states("assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), Boolean(job.title) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), Boolean(job.description) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), Boolean(job.tags?.length) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), Boolean(job.seo) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state), states("scheduled", "published").includes(job.state), false];
-  if (job.state === "failed") { const failureIndex = !job.research ? 0 : !job.script ? 1 : !job.voiceId ? 2 : !job.videoId ? 3 : 8; if (index === failureIndex) return "error"; return index < failureIndex || complete[index] ? "done" : "pending"; }
+  if (job.state === "published" || job.state === "scheduled") return "done";
+  const complete = [
+    doneByState.includes(job.state),
+    doneByState.includes(job.state),
+    states("generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    states("assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.title) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.description) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.tags?.length) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.seo) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    states("scheduled", "published").includes(job.state),
+    job.state === "published",
+  ];
+  if (job.state === "failed") {
+    const failureIndex = !job.research ? 0 : !job.script ? 1 : !job.voiceId ? 2 : !job.videoId ? 3 : 8;
+    if (index === failureIndex) return "error";
+    return index < failureIndex || complete[index] ? "done" : "pending";
+  }
   if (complete[index]) return "done";
-  const activeStage = job.state === "researching" ? 0 : job.state === "scripting" ? 1 : job.state === "generating_voice" ? 2 : job.state === "generating_visuals" ? 3 : job.state === "assembling" || job.state === "thumbnail" || job.state === "quality_check" ? 4 : job.state === "uploading" ? 8 : -1;
+  const activeStage = job.state === "researching" ? 0 : job.state === "scripting" ? 1 : job.state === "generating_voice" ? 2 : job.state === "generating_visuals" ? 3 : job.state === "assembling" ? 8 : job.state === "uploading" ? 8 : -1;
   return activeByState.includes(job.state) && index === activeStage ? "active" : "pending";
 }
 function stageIcon(status: PipelineStatus) { return status === "done" ? "✓" : status === "error" ? "!" : status === "active" ? "•" : ""; }
-function pipelineProgress(job: ContentJob | null) { if (!job) return 0; if (job.state === "published") return 100; const completed = pipelineStages.reduce((count, _, index) => count + (stageStatus(job, index) === "done" ? 1 : 0), 0); return Math.round((completed / pipelineStages.length) * 100); }
+function pipelineProgress(job: ContentJob | null) { if (!job) return 0; if (job.state === "published" || job.state === "scheduled") return 100; const completed = pipelineStages.reduce((count, _, index) => count + (stageStatus(job, index) === "done" ? 1 : 0), 0); return Math.round((completed / pipelineStages.length) * 100); }
 
 export function Dashboard({ initialJobs, initialLogs, configured, youtubeConnected, channelStats, youtubeAnalytics }: { initialJobs: ContentJob[]; initialLogs: JobLog[]; configured: boolean; youtubeConnected: boolean; channelStats: YoutubeChannelStats | null; youtubeAnalytics: YoutubeAnalytics | null }) {
-  const [jobs, setJobs] = useState(initialJobs); const [logs, setLogs] = useState(initialLogs); const [busy, setBusy] = useState(false);
-  const isIdleSeed = (job: ContentJob) => job.id.startsWith("seed-") && job.state === "queued" && !busy && !job.research && !job.script && !job.voiceId && !job.videoId;
-  const run = async (id: string) => { setBusy(true); try { const res = await fetch(`/api/jobs/${id}/run`, { method: "POST" }); const data = await res.json(); if (data.job) { setJobs(all => all.map(j => j.id === id ? data.job : j)); setLogs(all => [{ id: crypto.randomUUID(), jobId: id, level: res.ok ? "info" : "error", message: res.ok ? `Live worker advanced to ${data.job.state.replaceAll("_", " ")}.` : data.error, createdAt: new Date().toISOString() }, ...all]); } } catch (error) { setLogs(all => [{ id: crypto.randomUUID(), jobId: id, level: "error", message: error instanceof Error ? error.message : "Pipeline request failed.", createdAt: new Date().toISOString() }, ...all]); } finally { setBusy(false); } };
+  const [jobs, setJobs] = useState(initialJobs);
+  const [logs, setLogs] = useState(initialLogs);
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const runningRef = useRef<string | null>(null);
+
+  const applyJob = (job: ContentJob) => setJobs(all => all.some(j => j.id === job.id) ? all.map(j => j.id === job.id ? job : j) : [job, ...all]);
+  const addLog = (jobId: string, level: JobLog["level"], message: string) => setLogs(all => [{ id: crypto.randomUUID(), jobId, level, message, createdAt: new Date().toISOString() }, ...all]);
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const runJob = async (id: string) => {
+    if (runningRef.current) return;
+    runningRef.current = id;
+    setRunningId(id);
+    try {
+      // One durable worker request performs one stage. Keep advancing until the job is terminal.
+      // This also means the Run Live button does not reappear between stages.
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const res = await fetch(`/api/jobs/${id}/run`, { method: "POST", cache: "no-store" });
+        const data = await res.json().catch(() => ({}));
+        if (data.job) applyJob(data.job);
+        if (!res.ok) {
+          addLog(id, "error", data.error || "Pipeline request failed.");
+          break;
+        }
+        if (data.job) {
+          if (data.job.state === "published" || data.job.state === "scheduled") {
+            addLog(id, "info", "✓ All production stages completed.");
+            break;
+          }
+          if (data.job.state === "failed") {
+            addLog(id, "error", "Pipeline stopped with an error. Retry is available.");
+            break;
+          }
+        }
+        // Video generation can be asynchronous; wait before asking the worker to check again.
+        await sleep(900);
+      }
+    } catch (error) {
+      addLog(id, "error", error instanceof Error ? error.message : "Pipeline request failed.");
+    } finally {
+      runningRef.current = null;
+      setRunningId(null);
+    }
+  };
+
+  // Keep the dashboard synchronized after refresh. If a job was already in progress,
+  // automatically resume the next worker stage instead of leaving the UI stuck.
+  useEffect(() => {
+    let stopped = false;
+    const sync = async () => {
+      try {
+        const res = await fetch("/api/jobs", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (stopped || !Array.isArray(data.jobs)) return;
+        setJobs(data.jobs);
+        const active = data.jobs.find((job: ContentJob) => !isTerminal(job) && job.state !== "queued");
+        if (active && !runningRef.current) void runJob(active.id);
+      } catch { /* transient dashboard refresh failure; next poll retries */ }
+    };
+    void sync();
+    const timer = window.setInterval(sync, 2500);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, []);
+
   const today = jobs.filter(j => new Date(j.scheduledFor).toDateString() === new Date().toDateString());
-  const activeJob = jobs.find(j => !["scheduled", "published", "failed"].includes(j.state) && !isIdleSeed(j)) ?? (busy ? jobs.find(j => !["scheduled", "published", "failed"].includes(j.state)) ?? null : null);
-  const progress = pipelineProgress(activeJob); const allDone = jobs.some(j => j.state === "published") && jobs.every(j => j.state === "published" || j.state === "scheduled");
+  const isIdleSeed = (job: ContentJob) => job.id.startsWith("seed-") && job.state === "queued" && !runningId && !job.research && !job.script && !job.voiceId && !job.videoId;
+  const activeJob = jobs.find(j => !isTerminal(j) && !isIdleSeed(j)) ?? null;
+  const progress = pipelineProgress(activeJob);
+  const allDone = jobs.some(j => j.state === "published") && jobs.every(j => j.state === "published" || j.state === "scheduled");
+
   return <main><aside><div className="brand"><span>UWF</span> YT Agent</div><nav><a className="active">Overview</a><a>Content pipeline</a><a>Schedule</a><a>Video library</a><a href="/settings">Settings</a></nav><div className="sidebar-foot">Operations console<br/><small>Long-form only · v1.1.0</small></div></aside><section className="content"><header><div><p className="eyebrow">CONTENT OPERATIONS</p><h1>Good morning, UWF.</h1><p className="muted">Your autonomous long-form publishing desk is ready.</p></div>{youtubeConnected ? <span className="button connected-button">✓ Connected</span> : <a className="button" href="/api/youtube/oauth">{configured ? "Connect YouTube" : "Configure YouTube"}</a>}</header>
-  <div className="metrics"><Metric name="Today’s jobs" value={`${today.length}/1`} hint="1 long video / day" /><Metric name="Pipeline active" value={String(jobs.filter(j => !["scheduled", "published", "failed"].includes(j.state) && !isIdleSeed(j)).length)} hint="Long-form content in progress" /><Metric name="YouTube" value={youtubeConnected ? "Connected" : configured ? "Ready" : "Setup needed"} hint={youtubeConnected ? "Uploads authorized" : configured ? "Authorization required" : "Add OAuth secrets"} /><Metric name="API health" value="Healthy" hint="Server responding" /></div>
-  <div className="grid"><section className="panel wide"><div className="panel-title"><div><p className="eyebrow">TODAY</p><h2>Publishing queue</h2></div><span className="muted">1 long video / day</span></div><div className="jobs">{jobs.slice(0, 5).map(job => { const visibleState = isIdleSeed(job) ? "queued" : job.state; const canRun = !busy && !["scheduled", "published"].includes(job.state); return <article className="job" key={job.id}><div className="job-icon">▶</div><div className="job-main"><strong>{job.title}</strong><span>{job.topic} · 5–10 min Long Video</span></div><time>{new Date(job.scheduledFor).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span className={`badge ${visibleState}`}>{labels[visibleState]}</span>{busy ? <span className="muted">Working…</span> : canRun ? <button onClick={() => run(job.id)}>{job.state === "failed" ? "Retry" : "Run live"}</button> : null}</article>; })}</div></section>
+  <div className="metrics"><Metric name="Today’s jobs" value={`${today.length}/1`} hint="1 long video / day" /><Metric name="Pipeline active" value={String(jobs.filter(j => !isTerminal(j) && !isIdleSeed(j)).length)} hint="Long-form content in progress" /><Metric name="YouTube" value={youtubeConnected ? "Connected" : configured ? "Ready" : "Setup needed"} hint={youtubeConnected ? "Uploads authorized" : configured ? "Authorization required" : "Add OAuth secrets"} /><Metric name="API health" value="Healthy" hint="Server responding" /></div>
+  <div className="grid"><section className="panel wide"><div className="panel-title"><div><p className="eyebrow">TODAY</p><h2>Publishing queue</h2></div><span className="muted">1 long video / day</span></div><div className="jobs">{jobs.slice(0, 5).map(job => { const visibleState = isIdleSeed(job) ? "queued" : job.state; const active = !isTerminal(job) && !isIdleSeed(job); const canRun = !runningId && !active && !["scheduled", "published"].includes(job.state); return <article className="job" key={job.id}><div className="job-icon">▶</div><div className="job-main"><strong>{job.title}</strong><span>{job.topic} · 5–10 min Long Video</span></div><time>{new Date(job.scheduledFor).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span className={`badge ${visibleState}`}>{labels[visibleState]}</span>{active ? <span className="muted">Working…</span> : canRun ? <button onClick={() => void runJob(job.id)}>{job.state === "failed" ? "Retry" : "Run live"}</button> : null}</article>; })}</div></section>
   <section className="panel"><p className="eyebrow">CHANNEL CONNECTION</p><h2>YouTube Studio</h2><div className={`connection ${youtubeConnected ? "ok" : "warn"}`}><b>{youtubeConnected ? "✓ Connected" : configured ? "Authorization required" : "Action required"}</b><p>{youtubeConnected ? `${channelStats?.title ?? "Your YouTube channel"} is authorized for uploads.` : configured ? "Connect your Google account to authorize uploads." : "Add YouTube OAuth credentials in your server environment."}</p></div>{youtubeConnected ? <span className="connected-note">Google account authorized</span> : <a className="text-link" href="/api/youtube/oauth">Open authorization →</a>}</section>
   <section className="panel wide analytics-panel"><div className="panel-title"><div><p className="eyebrow">YOUTUBE ANALYTICS</p><h2>{channelStats?.title ?? "Channel analytics"}</h2></div><span className="muted">Live channel totals</span></div>{channelStats ? <><div className="analytics-grid"><Metric name="Subscribers" value={compact(channelStats.subscriberCount)} hint="Current subscribers" /><Metric name="Total views" value={compact(channelStats.viewCount)} hint="Lifetime channel views" /><Metric name="Videos" value={compact(channelStats.videoCount)} hint="Published videos" /><Metric name="Watch time" value={youtubeAnalytics ? `${hours(youtubeAnalytics.watchTimeHours)}h` : "—"} hint={youtubeAnalytics ? `Last ${youtubeAnalytics.recentDays} days` : "Analytics API needed"} /></div><div className="recent-performance"><div><p className="eyebrow">RECENT PERFORMANCE</p><h3>Last 7 days</h3></div>{youtubeAnalytics ? <div className="performance-grid"><div><b>{compact(youtubeAnalytics.recentViews)}</b><span>Views · {changePercent(youtubeAnalytics.recentViews, youtubeAnalytics.previousViews)}</span></div><div><b>{compact(youtubeAnalytics.recentSubscribers)}</b><span>Subscribers · {changePercent(youtubeAnalytics.recentSubscribers, youtubeAnalytics.previousSubscribers)}</span></div><div><b>{hours(youtubeAnalytics.watchTimeHours)}h</b><span>Watch time</span></div></div> : <p className="muted">Reconnect YouTube after enabling the YouTube Analytics API so watch time and recent performance can load.</p>}</div></> : <div className="analytics-empty">{youtubeConnected ? "Channel analytics are temporarily unavailable." : "Connect YouTube to load subscriber, view, and video statistics."}</div>}</section>
   <section className="panel wide"><div className="panel-title"><div><p className="eyebrow">AUTOMATION PIPELINE</p><h2>Production stages</h2></div><div style={{ minWidth: 190, textAlign: "right" }}><strong style={{ fontSize: 22 }}>{progress}%</strong><span className={`pipeline-overall ${allDone ? "all-done" : activeJob?.state === "failed" ? "has-error" : "in-progress"}`} style={{ display: "block", marginTop: 6 }}>{allDone ? "✓ All Done" : activeJob?.state === "failed" ? "✕ Error" : activeJob ? "Live worker execution" : "Ready to run"}</span></div></div><div style={{ height: 8, width: "100%", background: "rgba(128,128,128,.18)", borderRadius: 999, overflow: "hidden", margin: "4px 0 18px" }}><div style={{ height: "100%", width: `${progress}%`, background: "currentColor", borderRadius: 999, transition: "width .35s ease" }} /></div><div className="pipeline-checklist">{pipelineStages.map((stage, index) => { const status = stageStatus(activeJob, index); return <div key={stage} className={`pipeline-stage ${status}`}><b>{status === "pending" ? index + 1 : stageIcon(status)}</b><span>{stage}</span><em>{status === "done" ? "Complete · 10%" : status === "error" ? "Error" : status === "active" ? "In progress" : "Pending"}</em></div>; })}</div><p className="muted pipeline-note">{allDone ? "All production stages completed and the long-form video has been published to YouTube." : activeJob ? `Pipeline completion: ${progress}% · ✓ complete, • in progress, ! error, or pending.` : "Pipeline is ready. Press Run live to start production."}</p></section>
