@@ -16,18 +16,44 @@ const modelFor = (provider: Provider, options: GenerateOptions) => {
   if (provider === "openrouter") return process.env.OPENROUTER_MODEL || "openrouter/free";
   return process.env.OLLAMA_MODEL || "llama3.2:3b";
 };
+const contentToText = (value: unknown): string | null => {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    const parts = value.map(item => {
+      if (typeof item === "string") return item;
+      if (item && typeof item === "object") {
+        const record = item as UnknownRecord;
+        return typeof record.text === "string" ? record.text : typeof record.content === "string" ? record.content : "";
+      }
+      return "";
+    }).filter(Boolean);
+    return parts.length ? parts.join("\n").trim() : null;
+  }
+  return null;
+};
 const parseResponseText = (data: unknown): string => {
   if (!data || typeof data !== "object") throw new Error("AI provider returned an invalid response.");
-  const record = data as UnknownRecord; const choices = Array.isArray(record.choices) ? record.choices : []; const firstChoice = choices[0];
-  const firstMessage = firstChoice && typeof firstChoice === "object" ? (firstChoice as UnknownRecord).message : undefined;
-  const openAiText = firstMessage && typeof firstMessage === "object" ? (firstMessage as UnknownRecord).content : undefined;
-  if (typeof openAiText === "string" && openAiText.trim()) return openAiText.trim();
-  if (Array.isArray(openAiText)) {
-    const joined = openAiText.map((item) => item && typeof item === "object" ? String((item as UnknownRecord).text || (item as UnknownRecord).content || "") : String(item || "")).join("").trim();
-    if (joined) return joined;
+  const record = data as UnknownRecord;
+  const direct = contentToText(record.output_text);
+  if (direct) return direct;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  const firstChoice = choices[0];
+  if (firstChoice && typeof firstChoice === "object") {
+    const choice = firstChoice as UnknownRecord;
+    const message = choice.message;
+    if (message && typeof message === "object") {
+      const msg = message as UnknownRecord;
+      const content = contentToText(msg.content) || contentToText(msg.reasoning_content) || contentToText(msg.reasoning);
+      if (content) return content;
+    }
+    const choiceText = contentToText(choice.text);
+    if (choiceText) return choiceText;
   }
-  const ollamaMessage = record.message; const ollamaText = ollamaMessage && typeof ollamaMessage === "object" ? (ollamaMessage as UnknownRecord).content : record.response;
-  if (typeof ollamaText === "string" && ollamaText.trim()) return ollamaText.trim();
+  const ollamaMessage = record.message;
+  const ollamaText = ollamaMessage && typeof ollamaMessage === "object" ? contentToText((ollamaMessage as UnknownRecord).content) : null;
+  if (ollamaText) return ollamaText;
+  const responseText = contentToText(record.response);
+  if (responseText) return responseText;
   throw new Error("AI provider returned no output text.");
 };
 const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = 20_000) => { const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs); try { return await fetch(url, { ...init, signal: controller.signal }); } finally { clearTimeout(timeout); } };
