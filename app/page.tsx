@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { Dashboard } from "./dashboard";
+import { PipelineAutoRunner } from "./pipeline-auto-runner";
 import { store } from "@/lib/store";
 import { getYoutubeAnalytics, getYoutubeChannelStats } from "@/lib/youtube";
 
@@ -17,24 +18,17 @@ export default async function Page() {
     try {
       channelStats = await getYoutubeChannelStats(refreshToken);
       youtubeConnected = true;
-      try {
-        youtubeAnalytics = await getYoutubeAnalytics(refreshToken);
-      } catch {
-        youtubeAnalytics = null;
-      }
-    } catch {
-      youtubeConnected = false;
-    }
+      try { youtubeAnalytics = await getYoutubeAnalytics(refreshToken); } catch { youtubeAnalytics = null; }
+    } catch { youtubeConnected = false; }
   }
 
+  const initialJobs = await store.list();
+  const initialLogs = await store.logs();
+
   return (
-    <Dashboard
-      initialJobs={store.list()}
-      initialLogs={store.logs()}
-      configured={oauthConfigured}
-      youtubeConnected={youtubeConnected}
-      channelStats={channelStats}
-      youtubeAnalytics={youtubeAnalytics}
-    />
+    <>
+      <PipelineAutoRunner jobs={initialJobs} />
+      <Dashboard initialJobs={initialJobs} initialLogs={initialLogs} configured={oauthConfigured} youtubeConnected={youtubeConnected} channelStats={channelStats} youtubeAnalytics={youtubeAnalytics} />
+    </>
   );
 }
