@@ -15,6 +15,8 @@ type GenerateOptions = {
   modelName?: string;
 };
 
+type UnknownRecord = Record<string, unknown>;
+
 const configuredProvider = (): "auto" | Provider => {
   const value = (process.env.AI_PROVIDER || "auto").toLowerCase();
   if (value === "groq" || value === "openrouter" || value === "ollama") return value;
@@ -54,18 +56,27 @@ const modelFor = (provider: Provider, options: GenerateOptions) => {
   return process.env.OLLAMA_MODEL || "llama3.2:3b";
 };
 
-const parseResponseText = (data: any): string => {
-  const openAiText = data?.choices?.[0]?.message?.content;
+const parseResponseText = (data: unknown): string => {
+  if (!data || typeof data !== "object") {
+    throw new Error("AI provider returned an invalid response.");
+  }
+
+  const record = data as UnknownRecord;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  const firstChoice = choices[0];
+  const firstMessage = firstChoice && typeof firstChoice === "object"
+    ? (firstChoice as UnknownRecord).message
+    : undefined;
+  const openAiText = firstMessage && typeof firstMessage === "object"
+    ? (firstMessage as UnknownRecord).content
+    : undefined;
   if (typeof openAiText === "string" && openAiText.trim()) return openAiText.trim();
 
-  const ollamaText = data?.message?.content || data?.response;
+  const ollamaMessage = record.message;
+  const ollamaText = ollamaMessage && typeof ollamaMessage === "object"
+    ? (ollamaMessage as UnknownRecord).content
+    : record.response;
   if (typeof ollamaText === "string" && ollamaText.trim()) return ollamaText.trim();
-
-  const geminiText = data?.candidates?.[0]?.content?.parts
-    ?.map((part: { text?: string }) => part.text || "")
-    .join("")
-    .trim();
-  if (geminiText) return geminiText;
 
   throw new Error("AI provider returned no output text.");
 };
@@ -120,9 +131,6 @@ async function requestOpenRouter(input: string, options: GenerateOptions) {
 
   if (options.json) body.response_format = { type: "json_object" };
 
-  // We deliberately keep the free router free of paid web-search add-ons.
-  // Research prompts still request current/factual information, while the
-  // provider chain remains usable without an extra search bill.
   const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -157,7 +165,7 @@ async function requestOllama(input: string, options: GenerateOptions) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    }, 90_000);
+  }, 90_000);
 
   if (!response.ok) throw new Error(`Ollama request failed (${response.status}): ${await response.text()}`);
   return parseResponseText(await response.json());
@@ -227,18 +235,28 @@ export async function buildContent(
     .replace(/^```json\s*/i, "")
     .replace(/```\s*$/i, "")
     .trim();
-  const parsed = JSON.parse(cleaned);
+  const parsed: unknown = JSON.parse(cleaned);
 
-  if (!scriptOutput || !parsed.title || !parsed.description || !Array.isArray(parsed.tags)) {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI metadata response is not valid JSON.");
+  }
+
+  const metadata = parsed as UnknownRecord;
+  const title = metadata.title;
+  const description = metadata.description;
+  const tags = metadata.tags;
+  const seo = metadata.seo;
+
+  if (typeof title !== "string" || typeof description !== "string" || !Array.isArray(tags)) {
     throw new Error("AI content response is incomplete.");
   }
 
   return {
     research,
     script: scriptOutput,
-    title: parsed.title,
-    description: parsed.description,
-    tags: parsed.tags,
-    seo: parsed.seo ?? "",
+    title,
+    description,
+    tags: tags.filter((tag): tag is string => typeof tag === "string"),
+    seo: typeof seo === "string" ? seo : "",
   };
 }
