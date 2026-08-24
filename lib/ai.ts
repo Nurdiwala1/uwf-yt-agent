@@ -213,25 +213,20 @@ async function generateContent(input: string, options: GenerateOptions = {}) {
 }
 
 export async function researchTopic(topic: string, format: "short" | "long") {
-  const prompt = `Research this UWF YouTube topic: ${topic}. Format: ${format}. Return a concise factual research brief with key facts, important numbers/dates, likely recent developments, and source names. Keep it under 700 words. Do not invent facts.`;
+  const prompt = `Research this UWF YouTube topic: ${topic}. Format: ${format}. Return a concise factual research brief with key facts, important numbers/dates, likely recent developments, and source names. Keep it under 700 words. Do not invent facts. If you do not know a current fact, clearly say that it needs verification.`;
 
-  // Research is the first pipeline stage and must never consume the whole Vercel
-  // function window. Prefer one fast live web-search attempt, then immediately
-  // fall back to the normal Groq model instead of trying multiple 45s providers.
-  if (process.env.GROQ_API_KEY) {
-    try {
-      return await requestGroq(prompt, { webSearch: true, timeoutMs: 20_000, maxTokens: 900 });
-    } catch {
-      return requestGroq(prompt, {
-        webSearch: false,
-        modelName: process.env.GROQ_FAST_MODEL || process.env.GROQ_MODEL || "openai/gpt-oss-20b",
-        timeoutMs: 15_000,
-        maxTokens: 900,
-      });
-    }
-  }
+  // IMPORTANT: Research intentionally uses a normal text model here.
+  // Do not enable provider-side web/tool calling in this stage. This avoids
+  // tool_choice/tool-use 400 errors and lets the pipeline reliably move from
+  // Research -> Script. Live web search can be added as a separate stage later.
+  const options: GenerateOptions = {
+    webSearch: false,
+    modelName: process.env.GROQ_FAST_MODEL || process.env.GROQ_MODEL || "openai/gpt-oss-20b",
+    timeoutMs: 20_000,
+    maxTokens: 900,
+  };
 
-  return generateContent(prompt, { webSearch: false, timeoutMs: 20_000, maxTokens: 900 });
+  return generateContent(prompt, options);
 }
 
 export async function buildContent(
