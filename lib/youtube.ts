@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { Readable } from "node:stream";
 
 function oauth() {
   const { YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, YOUTUBE_REDIRECT_URI } = process.env;
@@ -106,9 +107,22 @@ export async function getYoutubeAnalytics(refreshToken: string): Promise<Youtube
   };
 }
 
-export async function uploadToYouTube(accessToken: string, metadata: { title: string; description: string; tags: string[]; privacyStatus: "private" | "unlisted" | "public"; publishAt?: string }, videoBody: NodeJS.ReadableStream) {
+export async function uploadToYouTube(
+  refreshToken: string,
+  metadata: {
+    title: string;
+    description: string;
+    tags: string[];
+    privacyStatus: "private" | "unlisted" | "public";
+    publishAt?: string;
+  },
+  videoBody: ReadableStream<Uint8Array>,
+) {
   const client = oauth();
-  client.setCredentials({ access_token: accessToken });
+  client.setCredentials({ refresh_token: refreshToken });
+  await client.getAccessToken();
+
+  const body = Readable.fromWeb(videoBody as Parameters<typeof Readable.fromWeb>[0]);
   return google.youtube("v3").videos.insert({
     auth: client,
     part: ["snippet", "status"],
@@ -116,6 +130,6 @@ export async function uploadToYouTube(accessToken: string, metadata: { title: st
       snippet: { title: metadata.title, description: metadata.description, tags: metadata.tags },
       status: { privacyStatus: metadata.privacyStatus, publishAt: metadata.publishAt },
     },
-    media: { body: videoBody },
+    media: { body },
   });
 }
