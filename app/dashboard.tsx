@@ -5,24 +5,35 @@ import type { YoutubeAnalytics, YoutubeChannelStats } from "@/lib/youtube";
 const labels: Record<string, string> = { queued: "Queued", researching: "Researching", scripting: "Scripting", generating_voice: "Voice", generating_visuals: "Visuals", assembling: "Assembling", thumbnail: "Thumbnail", quality_check: "Quality check", uploading: "Uploading", scheduled: "Scheduled", published: "Published", failed: "Failed" };
 const pipelineStages = ["Research", "Script", "Voice", "Video", "Title", "Description", "Tags & Keywords", "SEO", "YouTube Upload", "Publish"] as const;
 type PipelineStatus = "pending" | "active" | "done" | "error";
+type JobState = ContentJob["state"];
+const doneByState: JobState[] = ["scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"];
+const activeByState: JobState[] = ["researching", "scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading"];
 function compact(value: number) { return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value); }
 function hours(value: number) { return value < 10 ? value.toFixed(1) : compact(value); }
 function changePercent(current: number, previous: number) { if (previous === 0) return current > 0 ? "+100%" : "0%"; const change = ((current - previous) / previous) * 100; return `${change >= 0 ? "+" : ""}${change.toFixed(0)}%`; }
 function stageStatus(job: ContentJob | null, index: number): PipelineStatus {
   if (!job) return "pending";
   if (job.state === "published") return "done";
-  const doneByState = ["scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"];
-  const activeByState = ["researching", "scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading"];
-  const complete = [doneByState.includes(job.state), doneByState.includes(job.state), ["generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), ["assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), Boolean(job.title) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), Boolean(job.description) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), Boolean(job.tags?.length) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), Boolean(job.seo) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state), ["scheduled", "published"].includes(job.state), job.state === "published"];
+  const complete = [
+    doneByState.includes(job.state),
+    doneByState.includes(job.state),
+    ["generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    ["assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    Boolean(job.title) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    Boolean(job.description) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    Boolean(job.tags?.length) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    Boolean(job.seo) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
+    ["scheduled", "published"].includes(job.state),
+    job.state === "published"
+  ];
   if (job.state === "failed") {
     const failureIndex = !job.research ? 0 : !job.script ? 1 : !job.voiceId ? 2 : !job.videoId ? 3 : 8;
     if (index === failureIndex) return "error";
     return index < failureIndex || complete[index] ? "done" : "pending";
   }
   if (complete[index]) return "done";
-  const activeIndex = activeByState.indexOf(job.state);
-  const activeStage = job.state === "researching" ? 0 : job.state === "scripting" ? 1 : job.state === "generating_voice" ? 2 : job.state === "generating_visuals" ? 3 : job.state === "assembling" ? 4 : job.state === "thumbnail" ? 4 : job.state === "quality_check" ? 4 : job.state === "uploading" ? 8 : -1;
-  return activeIndex >= 0 && index === activeStage ? "active" : "pending";
+  const activeStage = job.state === "researching" ? 0 : job.state === "scripting" ? 1 : job.state === "generating_voice" ? 2 : job.state === "generating_visuals" ? 3 : job.state === "assembling" || job.state === "thumbnail" || job.state === "quality_check" ? 4 : job.state === "uploading" ? 8 : -1;
+  return activeByState.includes(job.state) && index === activeStage ? "active" : "pending";
 }
 function stageIcon(status: PipelineStatus) { return status === "done" ? "✓" : status === "error" ? "!" : status === "active" ? "•" : ""; }
 export function Dashboard({ initialJobs, initialLogs, configured, youtubeConnected, channelStats, youtubeAnalytics }: { initialJobs: ContentJob[]; initialLogs: JobLog[]; configured: boolean; youtubeConnected: boolean; channelStats: YoutubeChannelStats | null; youtubeAnalytics: YoutubeAnalytics | null }) {
