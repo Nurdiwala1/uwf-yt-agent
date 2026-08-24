@@ -3,7 +3,7 @@ import type { ContentJob, JobLog } from "./types";
 type DbJob = Record<string, unknown>;
 type DbLog = Record<string, unknown>;
 
-const baseUrl = () => (process.env.SUPABASE_URL || "").replace(/\/$/, "");
+const baseUrl = () => (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
 const secretKey = () => process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 export const persistenceConfigured = () => Boolean(baseUrl() && secretKey());
 
