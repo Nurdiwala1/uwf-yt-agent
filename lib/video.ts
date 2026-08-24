@@ -21,7 +21,20 @@ export async function startVideo(prompt: string, format: "short" | "long") {
 }
 
 export async function getVideo(videoId: string) {
-  const response = await fetch(`https://api.openai.com/v1/videos/${encodeURIComponent(videoId)}`, { headers: { Authorization: `Bearer ${key()}` } });
+  const response = await fetch(`https://api.openai.com/v1/videos/${encodeURIComponent(videoId)}`, {
+    headers: { Authorization: `Bearer ${key()}` },
+    cache: "no-store",
+  });
   if (!response.ok) throw new Error(`Video status request failed (${response.status}): ${await response.text()}`);
   return response.json();
+}
+
+export async function downloadVideo(videoId: string) {
+  const response = await fetch(`https://api.openai.com/v1/videos/${encodeURIComponent(videoId)}/content`, {
+    headers: { Authorization: `Bearer ${key()}` },
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Video download failed (${response.status}): ${await response.text()}`);
+  if (!response.body) throw new Error("Video provider returned an empty video body.");
+  return response.body;
 }
