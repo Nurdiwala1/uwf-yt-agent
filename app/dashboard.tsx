@@ -27,7 +27,7 @@ function stageStatus(job: ContentJob | null, index: number): PipelineStatus {
     Boolean(job.tags?.length) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
     Boolean(job.seo) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
     states("scheduled", "published").includes(job.state),
-    job.state === "published",
+    false,
   ];
   if (job.state === "failed") {
     const failureIndex = !job.research ? 0 : !job.script ? 1 : !job.voiceId ? 2 : !job.videoId ? 3 : 8;
@@ -56,8 +56,6 @@ export function Dashboard({ initialJobs, initialLogs, configured, youtubeConnect
     runningRef.current = id;
     setRunningId(id);
     try {
-      // One durable worker request performs one stage. Keep advancing until the job is terminal.
-      // This also means the Run Live button does not reappear between stages.
       for (let attempt = 0; attempt < 120; attempt += 1) {
         const res = await fetch(`/api/jobs/${id}/run`, { method: "POST", cache: "no-store" });
         const data = await res.json().catch(() => ({}));
@@ -76,7 +74,6 @@ export function Dashboard({ initialJobs, initialLogs, configured, youtubeConnect
             break;
           }
         }
-        // Video generation can be asynchronous; wait before asking the worker to check again.
         await sleep(900);
       }
     } catch (error) {
@@ -87,8 +84,6 @@ export function Dashboard({ initialJobs, initialLogs, configured, youtubeConnect
     }
   };
 
-  // Keep the dashboard synchronized after refresh. If a job was already in progress,
-  // automatically resume the next worker stage instead of leaving the UI stuck.
   useEffect(() => {
     let stopped = false;
     const sync = async () => {
