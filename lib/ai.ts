@@ -7,79 +7,203 @@ type ResearchResult = {
   seo: string;
 };
 
-const apiKey = () => {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("GEMINI_API_KEY is not configured.");
-  }
-  return process.env.GEMINI_API_KEY;
+type Provider = "groq" | "openrouter" | "ollama";
+
+type GenerateOptions = {
+  webSearch?: boolean;
+  json?: boolean;
+  modelName?: string;
 };
 
-// Keep the stronger model for research/script and use the lighter model for
-// high-volume metadata work. Both can be overridden from Vercel env vars.
-const primaryModel = () => process.env.GEMINI_MODEL || "gemini-3.6-flash";
-const liteModel = () => process.env.GEMINI_LITE_MODEL || "gemini-3.5-flash-lite";
+const configuredProvider = (): "auto" | Provider => {
+  const value = (process.env.AI_PROVIDER || "auto").toLowerCase();
+  if (value === "groq" || value === "openrouter" || value === "ollama") return value;
+  return "auto";
+};
 
-async function generateContent(
-  input: string,
-  options: { webSearch?: boolean; json?: boolean; modelName?: string } = {},
-) {
+const providerAvailability = (provider: Provider) => {
+  if (provider === "groq") return Boolean(process.env.GROQ_API_KEY);
+  if (provider === "openrouter") return Boolean(process.env.OPENROUTER_API_KEY);
+  return Boolean(process.env.OLLAMA_BASE_URL);
+};
+
+const providerOrder = (): Provider[] => {
+  const preferred = configuredProvider();
+  const all: Provider[] = ["groq", "openrouter", "ollama"];
+
+  if (preferred !== "auto") {
+    return [preferred, ...all.filter((provider) => provider !== preferred)];
+  }
+
+  return all;
+};
+
+const modelFor = (provider: Provider, options: GenerateOptions) => {
+  if (options.modelName) return options.modelName;
+
+  if (provider === "groq") {
+    return options.webSearch
+      ? process.env.GROQ_RESEARCH_MODEL || "groq/compound-mini"
+      : process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+  }
+
+  if (provider === "openrouter") {
+    return process.env.OPENROUTER_MODEL || "openrouter/free";
+  }
+
+  return process.env.OLLAMA_MODEL || "llama3.2:3b";
+};
+
+const parseResponseText = (data: any): string => {
+  const openAiText = data?.choices?.[0]?.message?.content;
+  if (typeof openAiText === "string" && openAiText.trim()) return openAiText.trim();
+
+  const ollamaText = data?.message?.content || data?.response;
+  if (typeof ollamaText === "string" && ollamaText.trim()) return ollamaText.trim();
+
+  const geminiText = data?.candidates?.[0]?.content?.parts
+    ?.map((part: { text?: string }) => part.text || "")
+    .join("")
+    .trim();
+  if (geminiText) return geminiText;
+
+  throw new Error("AI provider returned no output text.");
+};
+
+const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = 45_000) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+async function requestGroq(input: string, options: GenerateOptions) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY is not configured.");
+
+  const model = modelFor("groq", options);
   const body: Record<string, unknown> = {
-    contents: [{ role: "user", parts: [{ text: input }] }],
+    model,
+    messages: [{ role: "user", content: input }],
   };
 
-  if (options.webSearch) body.tools = [{ google_search: {} }];
-
-  if (options.json) {
-    body.generationConfig = {
-      responseMimeType: "application/json",
-    };
+  if (options.json) body.response_format = { type: "json_object" };
+  if (options.webSearch && model.startsWith("groq/compound")) {
+    body.compound_custom = { tools: { enabled_tools: ["web_search", "visit_website"] } };
   }
 
-  const selectedModel = options.modelName || primaryModel();
-  const maxRetries = 3;
-  let lastDetails = "";
+  const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
 
-  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${encodeURIComponent(apiKey())}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      },
+  if (!response.ok) throw new Error(`Groq request failed (${response.status}): ${await response.text()}`);
+  return parseResponseText(await response.json());
+}
+
+async function requestOpenRouter(input: string, options: GenerateOptions) {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured.");
+
+  const body: Record<string, unknown> = {
+    model: modelFor("openrouter", options),
+    messages: [{ role: "user", content: input }],
+  };
+
+  if (options.json) body.response_format = { type: "json_object" };
+
+  // We deliberately keep the free router free of paid web-search add-ons.
+  // Research prompts still request current/factual information, while the
+  // provider chain remains usable without an extra search bill.
+  const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "https://uwf-yt-agent.vercel.app",
+      "X-Title": "UWF YT Agent",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenRouter request failed (${response.status}): ${await response.text()}`);
+  }
+
+  return parseResponseText(await response.json());
+}
+
+async function requestOllama(input: string, options: GenerateOptions) {
+  const baseUrl = (process.env.OLLAMA_BASE_URL || "").replace(/\/$/, "");
+  if (!baseUrl) throw new Error("OLLAMA_BASE_URL is not configured.");
+
+  const body: Record<string, unknown> = {
+    model: modelFor("ollama", options),
+    messages: [{ role: "user", content: input }],
+    stream: false,
+  };
+
+  if (options.json) body.format = "json";
+
+  const response = await fetchWithTimeout(`${baseUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    }, 90_000);
+
+  if (!response.ok) throw new Error(`Ollama request failed (${response.status}): ${await response.text()}`);
+  return parseResponseText(await response.json());
+}
+
+async function requestProvider(provider: Provider, input: string, options: GenerateOptions) {
+  if (provider === "groq") return requestGroq(input, options);
+  if (provider === "openrouter") return requestOpenRouter(input, options);
+  return requestOllama(input, options);
+}
+
+async function generateContent(input: string, options: GenerateOptions = {}) {
+  const errors: string[] = [];
+  const providers = providerOrder().filter(providerAvailability);
+
+  if (!providers.length) {
+    throw new Error(
+      "No AI provider is configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or OLLAMA_BASE_URL in Vercel Environment Variables.",
     );
-
-    if (response.ok) {
-      const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts
-        ?.map((part: { text?: string }) => part.text || "")
-        .join("")
-        .trim();
-
-      if (!text) throw new Error("Gemini returned no output text.");
-      return text;
-    }
-
-    lastDetails = await response.text();
-
-    // Gemini returns 429 for RPM/TPM/RPD/quota exhaustion. Back off before
-    // retrying instead of immediately hammering the same quota again.
-    if (response.status === 429 && attempt < maxRetries) {
-      const delayMs = 1500 * 2 ** attempt;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      continue;
-    }
-
-    throw new Error(`Gemini request failed (${response.status}): ${lastDetails}`);
   }
 
-  throw new Error(`Gemini request failed: ${lastDetails}`);
+  for (const provider of providers) {
+    const maxAttempts = 2;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        return await requestProvider(provider, input, options);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push(`${provider}: ${message}`);
+
+        const retryable = /\b(429|500|502|503|504)\b|quota|rate.?limit|resource.?exhausted|timeout/i.test(message);
+        if (!retryable || attempt === maxAttempts - 1) break;
+
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * 2 ** attempt));
+      }
+    }
+  }
+
+  throw new Error(`All AI providers failed. ${errors.join(" | ")}`);
 }
 
 export async function researchTopic(topic: string, format: "short" | "long") {
   return generateContent(
-    `Research this YouTube topic for UWF: ${topic}. Format: ${format}. Use Google Search grounding to verify current information where useful. Return a concise factual research brief with key facts, recent developments, important numbers/dates, and source names. Do not invent facts.`,
-    { webSearch: true, modelName: primaryModel() },
+    `Research this YouTube topic for UWF: ${topic}. Format: ${format}. Verify current information where useful. Return a concise factual research brief with key facts, recent developments, important numbers/dates, and source names. Do not invent facts.`,
+    { webSearch: true },
   );
 }
 
@@ -90,16 +214,13 @@ export async function buildContent(
 ): Promise<ResearchResult> {
   const duration = format === "short" ? "30-60 seconds" : "5-10 minutes";
 
-  // Use 3.6 Flash for the actual narration/script because it is the more
-  // capable agentic model, while keeping metadata generation on Lite.
   const scriptOutput = await generateContent(
     `You are the UWF YouTube content producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nWrite only the production-ready English narration script. It must be factual, engaging, natural for a male voice, and easy to understand. Do not add title, description, tags, headings, stage directions, or markdown.`,
-    { modelName: primaryModel() },
   );
 
   const metadataOutput = await generateContent(
     `You are the UWF YouTube SEO producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nScript:\n${scriptOutput}\n\nReturn ONLY valid JSON with exactly these keys: title, description, tags, seo.\n- title: clickable without misleading claims.\n- description: YouTube-ready description.\n- tags: array of 10-15 relevant keywords.\n- seo: briefly explain the primary keyword, search intent, and why the title/description match it.`,
-    { json: true, modelName: liteModel() },
+    { json: true },
   );
 
   const cleaned = metadataOutput
