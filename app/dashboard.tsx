@@ -8,6 +8,7 @@ type PipelineStatus = "pending" | "active" | "done" | "error";
 type JobState = ContentJob["state"];
 const doneByState: JobState[] = ["scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"];
 const activeByState: JobState[] = ["researching", "scripting", "generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading"];
+const states = (...values: JobState[]) => values;
 function compact(value: number) { return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value); }
 function hours(value: number) { return value < 10 ? value.toFixed(1) : compact(value); }
 function changePercent(current: number, previous: number) { if (previous === 0) return current > 0 ? "+100%" : "0%"; const change = ((current - previous) / previous) * 100; return `${change >= 0 ? "+" : ""}${change.toFixed(0)}%`; }
@@ -17,13 +18,13 @@ function stageStatus(job: ContentJob | null, index: number): PipelineStatus {
   const complete = [
     doneByState.includes(job.state),
     doneByState.includes(job.state),
-    ["generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    ["assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    Boolean(job.title) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    Boolean(job.description) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    Boolean(job.tags?.length) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    Boolean(job.seo) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
-    ["scheduled"].includes(job.state),
+    states("generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    states("assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.title) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.description) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.tags?.length) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    Boolean(job.seo) && states("generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled").includes(job.state),
+    states("scheduled", "published").includes(job.state),
     false
   ];
   if (job.state === "failed") {
