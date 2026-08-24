@@ -3,43 +3,71 @@ import type { ContentJob } from "./types";
 import { researchTopic, buildContent } from "./ai";
 import { generateVoice } from "./voice";
 import { startVideo, getVideo } from "./video";
+import { db, persistenceConfigured } from "./db";
 
-export async function runLiveStage(job: ContentJob) {
+export async function runLiveStage(input: ContentJob) {
+  const latest = await store.get(input.id);
+  if (!latest) throw new Error("Job not found.");
+  if (["failed", "published", "scheduled"].includes(latest.state)) return latest;
+  const claimed = await store.claim(latest.id);
+  if (!claimed) return (await store.get(latest.id)) ?? latest;
+
   try {
-    if (job.state === "researching") {
-      store.log(job.id, "Live research started using OpenAI web search.");
-      const research = await researchTopic(job.topic, job.format);
-      store.patch(job.id, { research }); store.update(job.id, "scripting");
-      store.log(job.id, "Research completed; script generation started.");
+    let current = await store.get(latest.id);
+    if (!current) throw new Error("Job disappeared from the store.");
+    if (current.state === "queued") {
+      current = (await store.update(current.id, "researching"))!;
+      await store.log(current.id, "Research workflow started.");
     }
-    const current = store.get(job.id)!;
+    if (current.state === "researching") {
+      await store.log(current.id, "Research stage running.");
+      const research = await researchTopic(current.topic, current.format);
+      await store.patch(current.id, { research });
+      const updated = (await store.update(current.id, "scripting"))!;
+      await store.log(current.id, "Research completed; script stage is ready.");
+      return updated;
+    }
     if (current.state === "scripting") {
+      await store.log(current.id, "Script, title, description, tags and SEO generation started.");
       const content = await buildContent(current.topic, current.research ?? "", current.format);
-      store.patch(job.id, { script: content.script, title: content.title, description: content.description, tags: content.tags, seo: content.seo });
-      store.update(job.id, "generating_voice"); store.log(job.id, "Script, title, description, tags and SEO generated.");
+      await store.patch(current.id, { script: content.script, title: content.title, description: content.description, tags: content.tags, seo: content.seo });
+      const updated = (await store.update(current.id, "generating_voice"))!;
+      await store.log(current.id, "Script and SEO completed; voice stage is ready.");
+      return updated;
     }
-    const afterScript = store.get(job.id)!;
-    if (afterScript.state === "generating_voice") {
-      const voice = await generateVoice(afterScript.script ?? "");
-      store.patch(job.id, { voiceId: voice.voiceId, voiceBytes: voice.audioBytes });
-      store.update(job.id, "generating_visuals"); store.log(job.id, `Voice generated successfully (${voice.audioBytes} bytes).`);
+    if (current.state === "generating_voice") {
+      await store.log(current.id, "Voice generation started.");
+      const voice = await generateVoice(current.script ?? "");
+      await store.patch(current.id, { voiceId: voice.voiceId, voiceBytes: voice.audioBytes });
+      const updated = (await store.update(current.id, "generating_visuals"))!;
+      await store.log(current.id, `Voice generated successfully (${voice.audioBytes} bytes).`);
+      return updated;
     }
-    const afterVoice = store.get(job.id)!;
-    if (afterVoice.state === "generating_visuals") {
-      if (afterVoice.videoId) {
-        const video = await getVideo(afterVoice.videoId);
-        if (video.status === "completed") { store.update(job.id, "assembling"); store.log(job.id, "Sora video generation completed; assembly is ready for the next worker stage."); }
-        else if (video.status === "failed" || video.error) throw new Error(video.error?.message ?? "Sora video generation failed.");
-        else store.log(job.id, `Sora video still ${video.status ?? "in progress"}.`);
-      } else {
-        const prompt = `Create a ${afterVoice.format === "short" ? "vertical 12-second" : "landscape 20-second"} YouTube finance/crypto visual for this topic: ${afterVoice.topic}. Use fast, premium, realistic mixed visuals, clean financial graphics, charts and market imagery. No copyrighted logos. The narration script is: ${afterVoice.script ?? ""}.`;
-        const video = await startVideo(prompt, afterVoice.format);
-        store.patch(job.id, { videoId: video.id }); store.log(job.id, `Sora video job created: ${video.id}.`);
+    if (current.state === "generating_visuals") {
+      if (current.videoId) {
+        const video = await getVideo(current.videoId);
+        if (video.status === "completed") {
+          const updated = (await store.update(current.id, "assembling"))!;
+          await store.log(current.id, "Sora video generation completed; assembly stage is ready.");
+          return updated;
+        }
+        if (video.status === "failed" || video.error) throw new Error(video.error?.message ?? "Sora video generation failed.");
+        await store.log(current.id, `Sora video still ${video.status ?? "in progress"}.`);
+        return current;
       }
+      const prompt = `Create a ${current.format === "short" ? "vertical 12-second" : "landscape 20-second"} YouTube finance/crypto visual for this topic: ${current.topic}. Use fast, premium, realistic mixed visuals, clean financial graphics, charts and market imagery. No copyrighted logos. The narration script is: ${current.script ?? ""}.`;
+      const video = await startVideo(prompt, current.format);
+      const updated = (await store.patch(current.id, { videoId: video.id }))!;
+      await store.log(current.id, `Sora video job created: ${video.id}.`);
+      return updated;
     }
-    return store.get(job.id)!;
+    return current;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown pipeline error";
-    store.update(job.id, "failed", message); store.log(job.id, message, "error"); throw error;
+    await store.update(latest.id, "failed", message);
+    await store.log(latest.id, message, "error");
+    throw error;
+  } finally {
+    if (persistenceConfigured()) { try { await db.jobs.release(latest.id); } catch { /* lease will expire */ } }
   }
 }
