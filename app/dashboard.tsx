@@ -17,14 +17,14 @@ function stageStatus(job: ContentJob | null, index: number): PipelineStatus {
   const complete = [
     doneByState.includes(job.state),
     doneByState.includes(job.state),
-    ["generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    ["assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    Boolean(job.title) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    Boolean(job.description) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    Boolean(job.tags?.length) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    Boolean(job.seo) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled", "published"].includes(job.state),
-    ["scheduled", "published"].includes(job.state),
-    job.state === "published"
+    ["generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    ["assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    Boolean(job.title) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    Boolean(job.description) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    Boolean(job.tags?.length) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    Boolean(job.seo) && ["generating_voice", "generating_visuals", "assembling", "thumbnail", "quality_check", "uploading", "scheduled"].includes(job.state),
+    ["scheduled"].includes(job.state),
+    false
   ];
   if (job.state === "failed") {
     const failureIndex = !job.research ? 0 : !job.script ? 1 : !job.voiceId ? 2 : !job.videoId ? 3 : 8;
