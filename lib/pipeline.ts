@@ -5,7 +5,7 @@ const steps: JobState[] = ["researching", "scripting", "generating_voice", "gene
 /** Orchestrator contract. Workers should call one stage at a time; external generation is intentionally not faked. */
 export async function advanceJob(job: ContentJob) {
   const next = steps[steps.indexOf(job.state) + 1] ?? "researching";
-  store.update(job.id, next);
-  store.log(job.id, `Moved to ${next.replaceAll("_", " ")}.`);
-  return store.get(job.id)!;
+  await store.update(job.id, next);
+  await store.log(job.id, `Moved to ${next.replaceAll("_", " ")}.`);
+  return (await store.get(job.id))!;
 }
