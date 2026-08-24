@@ -22,12 +22,29 @@ const parseResponseText = (data: unknown): string => {
   const firstMessage = firstChoice && typeof firstChoice === "object" ? (firstChoice as UnknownRecord).message : undefined;
   const openAiText = firstMessage && typeof firstMessage === "object" ? (firstMessage as UnknownRecord).content : undefined;
   if (typeof openAiText === "string" && openAiText.trim()) return openAiText.trim();
+  if (Array.isArray(openAiText)) {
+    const joined = openAiText.map((item) => item && typeof item === "object" ? String((item as UnknownRecord).text || (item as UnknownRecord).content || "") : String(item || "")).join("").trim();
+    if (joined) return joined;
+  }
   const ollamaMessage = record.message; const ollamaText = ollamaMessage && typeof ollamaMessage === "object" ? (ollamaMessage as UnknownRecord).content : record.response;
   if (typeof ollamaText === "string" && ollamaText.trim()) return ollamaText.trim();
   throw new Error("AI provider returned no output text.");
 };
 const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = 20_000) => { const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), timeoutMs); try { return await fetch(url, { ...init, signal: controller.signal }); } finally { clearTimeout(timeout); } };
-async function requestGroq(input: string, options: GenerateOptions) { const apiKey = process.env.GROQ_API_KEY; if (!apiKey) throw new Error("GROQ_API_KEY is not configured."); const model = modelFor("groq", options); const body: Record<string, unknown> = { model, messages: [{ role: "user", content: input }] }; if (options.maxTokens) body.max_completion_tokens = options.maxTokens; if (options.json) body.response_format = { type: "json_object" }; const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, options.timeoutMs ?? 20_000); if (!response.ok) throw new Error(`Groq request failed (${response.status}): ${await response.text()}`); return parseResponseText(await response.json()); }
+async function requestGroq(input: string, options: GenerateOptions) {
+  const apiKey = process.env.GROQ_API_KEY; if (!apiKey) throw new Error("GROQ_API_KEY is not configured.");
+  const primaryModel = modelFor("groq", options);
+  const models = primaryModel === "openai/gpt-oss-120b" ? [primaryModel, "llama-3.1-8b-instant"] : [primaryModel];
+  const errors: string[] = [];
+  for (const model of models) {
+    const body: Record<string, unknown> = { model, messages: [{ role: "user", content: input }] }; if (options.maxTokens) body.max_completion_tokens = options.maxTokens; if (options.json) body.response_format = { type: "json_object" };
+    const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body) }, options.timeoutMs ?? 20_000);
+    if (response.ok) return parseResponseText(await response.json());
+    const errorText = await response.text(); errors.push(`${model} (${response.status}): ${errorText}`);
+    if (response.status !== 429) break;
+  }
+  throw new Error(`Groq request failed. ${errors.join(" | ")}`);
+}
 async function requestOpenRouter(input: string, options: GenerateOptions) { const apiKey = process.env.OPENROUTER_API_KEY; if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured."); const body: Record<string, unknown> = { model: modelFor("openrouter", options), messages: [{ role: "user", content: input }] }; if (options.maxTokens) body.max_tokens = options.maxTokens; if (options.json) body.response_format = { type: "json_object" }; const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "https://uwf-yt-agent.vercel.app", "X-Title": "UWF YT Agent" }, body: JSON.stringify(body) }, options.timeoutMs ?? 20_000); if (!response.ok) throw new Error(`OpenRouter request failed (${response.status}): ${await response.text()}`); return parseResponseText(await response.json()); }
 async function requestOllama(input: string, options: GenerateOptions) { const baseUrl = (process.env.OLLAMA_BASE_URL || "").replace(/\/$/, ""); if (!baseUrl) throw new Error("OLLAMA_BASE_URL is not configured."); const body: Record<string, unknown> = { model: modelFor("ollama", options), messages: [{ role: "user", content: input }], stream: false }; if (options.json) body.format = "json"; const response = await fetchWithTimeout(`${baseUrl}/api/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, options.timeoutMs ?? 20_000); if (!response.ok) throw new Error(`Ollama request failed (${response.status}): ${await response.text()}`); return parseResponseText(await response.json()); }
 async function requestProvider(provider: Provider, input: string, options: GenerateOptions) { return provider === "groq" ? requestGroq(input, options) : provider === "openrouter" ? requestOpenRouter(input, options) : requestOllama(input, options); }
