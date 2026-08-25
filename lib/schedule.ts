@@ -1,9 +1,9 @@
 /**
- * UWF publishing strategy: long-form video every day, Monday through Sunday.
+ * UWF publishing strategy: one YouTube Short every day, Monday through Sunday.
  * Public YouTube publish time: 22:00 Pakistan time (Asia/Karachi).
  */
-export function formatForDate(_date: Date): "long" {
-  return "long";
+export function formatForDate(_date: Date): "short" {
+  return "short";
 }
 
 /** Returns the daily public YouTube publish slot: 22:00 Asia/Karachi (17:00 UTC). */
