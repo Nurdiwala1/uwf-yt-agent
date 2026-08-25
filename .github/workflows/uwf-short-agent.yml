@@ -1,0 +1,23 @@
+name: UWF Daily Shorts Agent
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Advance UWF Short pipeline
+        env:
+          UWF_URL: https://uwf-yt-agent.vercel.app
+          UWF_KEY: JsACSy0eflHpU3nrbjVjMgsfCY2bSw80MJhVVDcSuSk
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST "$UWF_URL/api/automation/tick" \
+            -H "Authorization: Bearer $UWF_KEY" \
+            -H "Cache-Control: no-store"
