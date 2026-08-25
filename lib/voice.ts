@@ -4,7 +4,11 @@ type Voice = {
   labels?: Record<string, string>;
 };
 
-type ElevenResponse = { voiceId: string; audioBytes: number; provider: "elevenlabs" };
+type VoiceResponse = {
+  voiceId: string;
+  audioBytes: number;
+  provider: "elevenlabs" | "deepgram";
+};
 
 async function listVoices(apiKey: string) {
   const response = await fetch("https://api.elevenlabs.io/v2/voices?page_size=100", {
@@ -16,13 +20,12 @@ async function listVoices(apiKey: string) {
   return (data.voices ?? []).filter((voice) => Boolean(voice.voice_id));
 }
 
-async function generateWithElevenLabs(script: string, apiKey: string): Promise<ElevenResponse> {
+async function generateWithElevenLabs(script: string, apiKey: string): Promise<VoiceResponse> {
   const voices = await listVoices(apiKey);
   if (!voices.length) throw new Error("ElevenLabs returned no usable voices.");
 
-  // Do not depend on hard-coded voice IDs or a male-only restriction. Prefer a
-  // natural-sounding English voice when the account exposes language/gender labels,
-  // but allow any available voice so the account remains fully flexible.
+  // No hard-coded voice IDs and no male-only restriction. Prefer English voices
+  // when labels expose that information, while allowing any account voice.
   const english = voices.filter((voice) => {
     const labels = Object.values(voice.labels ?? {}).join(" ").toLowerCase();
     return labels.includes("english") || labels.includes("en-") || labels.includes("american") || labels.includes("british");
@@ -53,33 +56,37 @@ async function generateWithElevenLabs(script: string, apiKey: string): Promise<E
     }
 
     lastError = `ElevenLabs voice ${voiceId} failed (${response.status}): ${await response.text()}`;
-    // A deleted/invalid voice should never stop the whole pipeline. Try another
-    // live voice from the account before falling through to the backup provider.
     if (response.status === 401 || response.status === 429 || response.status >= 500) break;
   }
 
   throw new Error(lastError || "ElevenLabs could not generate audio.");
 }
 
-async function generateWithGoogleTTS(script: string): Promise<ElevenResponse> {
-  const apiKey = process.env.GOOGLE_TTS_API_KEY?.trim();
-  if (!apiKey) throw new Error("GOOGLE_TTS_API_KEY is not configured.");
+async function generateWithDeepgram(script: string): Promise<VoiceResponse> {
+  const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
+  if (!apiKey) throw new Error("DEEPGRAM_API_KEY is not configured.");
 
-  const languageCode = process.env.GOOGLE_TTS_LANGUAGE_CODE?.trim() || "en-US";
-  const voiceName = process.env.GOOGLE_TTS_VOICE_NAME?.trim() || "en-US-Neural2-D";
-  const response = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${encodeURIComponent(apiKey)}`, {
+  // Aura-2 is Deepgram's current general-purpose TTS family. Keep the model
+  // configurable so a different available voice can be selected later without
+  // changing application code.
+  const model = process.env.DEEPGRAM_TTS_MODEL?.trim() || "aura-2-thalia-en";
+  const response = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mp3`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
-      input: { text: script },
-      voice: { languageCode, name: voiceName },
-      audioConfig: { audioEncoding: "MP3" },
-    }),
+    headers: {
+      Authorization: `Token ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "audio/mpeg",
+    },
+    body: JSON.stringify({ text: script }),
   });
-  if (!response.ok) throw new Error(`Google Cloud TTS failed (${response.status}): ${await response.text()}`);
-  const data = await response.json() as { audioContent?: string };
-  if (!data.audioContent) throw new Error("Google Cloud TTS returned no audio.");
-  return { voiceId: `${languageCode}:${voiceName}`, audioBytes: Buffer.from(data.audioContent, "base64").byteLength, provider: "elevenlabs" };
+
+  if (!response.ok) {
+    throw new Error(`Deepgram TTS failed (${response.status}): ${await response.text()}`);
+  }
+
+  const audio = Buffer.from(await response.arrayBuffer());
+  if (!audio.byteLength) throw new Error("Deepgram TTS returned empty audio.");
+  return { voiceId: model, audioBytes: audio.byteLength, provider: "deepgram" };
 }
 
 export async function generateVoice(script: string) {
@@ -91,16 +98,17 @@ export async function generateVoice(script: string) {
       return await generateWithElevenLabs(script, elevenKey);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown ElevenLabs error";
-      console.warn(`[voice] ElevenLabs failed; trying Google Cloud TTS fallback: ${message}`);
+      console.warn(`[voice] ElevenLabs failed; trying Deepgram TTS fallback: ${message}`);
     }
   }
 
   try {
-    const google = await generateWithGoogleTTS(script);
-    return { ...google, provider: "google" as const };
+    return await generateWithDeepgram(script);
   } catch (error) {
-    const googleMessage = error instanceof Error ? error.message : "Unknown Google TTS error";
-    if (!elevenKey) throw new Error(`ElevenLabs is not configured and Google Cloud TTS failed: ${googleMessage}`);
-    throw new Error(`All voice providers failed. ElevenLabs was unavailable and Google Cloud TTS failed: ${googleMessage}`);
+    const deepgramMessage = error instanceof Error ? error.message : "Unknown Deepgram TTS error";
+    if (!elevenKey) {
+      throw new Error(`ElevenLabs is not configured and Deepgram TTS failed: ${deepgramMessage}`);
+    }
+    throw new Error(`All voice providers failed. ElevenLabs was unavailable and Deepgram TTS failed: ${deepgramMessage}`);
   }
 }
