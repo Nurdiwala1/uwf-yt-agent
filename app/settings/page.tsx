@@ -2,7 +2,7 @@ export default function SettingsPage() {
   return (
     <main>
       <aside>
-        <div className="brand"><span>UWF</span> YT Agent</div>
+        <div className="brand"><span>UWF</span> <span className="brand-yt">YT</span> <span className="brand-agent">Agent</span></div>
         <nav>
           <a href="/">Overview</a>
           <a href="/">Content pipeline</a>
@@ -10,7 +10,7 @@ export default function SettingsPage() {
           <a href="/">Video library</a>
           <a className="active" href="/settings">Settings</a>
         </nav>
-        <div className="sidebar-foot">Operations console<br/><small>v1.0.0</small></div>
+        <div className="sidebar-foot">Operations console<br/><small>v1.2.0</small></div>
       </aside>
       <section className="content settings-page">
         <header>
@@ -39,9 +39,9 @@ export default function SettingsPage() {
             <ol className="guide-list">
               <li>Research the daily topic.</li>
               <li>Generate the script and metadata.</li>
-              <li>Create voice and video assets.</li>
+              <li>Create the voice direction and video asset.</li>
               <li>Run SEO and prepare the upload.</li>
-              <li>Upload and publish to the connected channel.</li>
+              <li>Upload and publish the Short to the connected channel.</li>
             </ol>
           </section>
 
