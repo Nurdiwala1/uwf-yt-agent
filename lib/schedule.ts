@@ -1,26 +1,18 @@
-/**
- * UWF publishing strategy:
- * - Monday–Sunday: one YouTube Short (30–60s)
- * - Long-form videos are disabled.
- * Public YouTube publish time: 22:00 Pakistan time (Asia/Karachi).
- */
+/** UWF is permanently Shorts-only: one 30–60 second Short every day. */
+export const TIMEZONE = "Asia/Karachi";
+export const SHORT_PUBLISH_HOUR_UTC = 17;
+export const SHORT_PUBLISH_MINUTE = 0;
+
 export function formatForDate(_date: Date): "short" {
   return "short";
 }
 
-/** Returns the daily public YouTube publish slot: 22:00 Asia/Karachi (17:00 UTC). */
+/** Returns the daily public YouTube publish slot: 22:00 Asia/Karachi / 17:00 UTC. */
 export function dailySlots(date = new Date()): Date[] {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Karachi",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
+    timeZone: TIMEZONE,
+    year: "numeric", month: "2-digit", day: "2-digit",
   }).formatToParts(date);
-
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  const year = Number(values.year);
-  const month = Number(values.month);
-  const day = Number(values.day);
-
-  return [new Date(Date.UTC(year, month - 1, day, 17, 0, 0))];
+  return [new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day), SHORT_PUBLISH_HOUR_UTC, SHORT_PUBLISH_MINUTE, 0))];
 }
