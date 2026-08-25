@@ -47,13 +47,14 @@ export async function runLiveStage(input: ContentJob) {
     if (current.state === "generating_visuals") {
       if (current.videoId) {
         const video = await getVideo(current.videoId);
-        if (video.status === "completed") {
+        const status = String(video.status ?? "").toLowerCase();
+        if (["completed", "succeeded"].includes(status)) {
           const updated = (await store.update(current.id, "assembling"))!;
           await store.log(current.id, "Short video generation completed; publishing is ready.");
           return updated;
         }
-        if (video.status === "failed" || video.error) throw new Error(video.error?.message ?? "Video generation failed.");
-        await store.log(current.id, `Short video still ${video.status ?? "in progress"}.`);
+        if (["failed", "error", "canceled", "cancelled"].includes(status) || video.error) throw new Error(video.error?.message ?? "Video generation failed.");
+        await store.log(current.id, `Short video still ${status || "in progress"}.`);
         return current;
       }
       const prompt = `Create a vertical YouTube Short about: ${current.topic}. Target a concise 30-60 second educational finance/crypto story. Generate an energetic sequence of realistic mixed visuals, clean financial graphics and market imagery. No copyrighted logos, no on-screen paragraphs, and no narration text. Keep the visual story synchronized to this short narration: ${current.script ?? ""}.`;
