@@ -1,16 +1,15 @@
 import type { ContentJob, JobLog, JobState } from "./types";
-import { formatForDate, dailySlots } from "./schedule";
 import { db, persistenceConfigured } from "./db";
+import { dailySlots } from "./schedule";
 
 declare global { var uwfStore: { jobs: ContentJob[]; logs: JobLog[] } | undefined; }
 
 const now = new Date();
-const format = formatForDate(now);
 const seedJob = (): ContentJob => ({
   id: `seed-${now.toISOString().slice(0, 10)}`,
   title: "Smart Investing: Today’s Crypto Setup",
   topic: "Investment education",
-  format,
+  format: "short",
   state: "queued",
   scheduledFor: dailySlots(now)[0].toISOString(),
   createdAt: now.toISOString(),
@@ -32,13 +31,13 @@ async function ensureDbSeed() {
 
 export const store = {
   list: async () => {
-    if (!persistenceConfigured()) return memory().jobs.sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
+    if (!persistenceConfigured()) return memory().jobs.filter(j => j.format === "short").sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
     await ensureDbSeed();
-    return db.jobs.list();
+    return (await db.jobs.list()).filter(j => j.format === "short");
   },
   get: async (id: string) => persistenceConfigured() ? db.jobs.get(id) : memory().jobs.find((j) => j.id === id),
-  create: async (input: Pick<ContentJob, "title" | "topic" | "format" | "scheduledFor">) => {
-    const job: ContentJob = { ...input, id: crypto.randomUUID(), state: "queued", createdAt: new Date().toISOString(), attempts: 0 };
+  create: async (input: Pick<ContentJob, "title" | "topic" | "scheduledFor"> & { format?: "short" | "long" }) => {
+    const job: ContentJob = { title: input.title, topic: input.topic, format: "short", scheduledFor: input.scheduledFor, id: crypto.randomUUID(), state: "queued", createdAt: new Date().toISOString(), attempts: 0 };
     if (persistenceConfigured()) return db.jobs.insert(job);
     memory().jobs.push(job); return job;
   },
