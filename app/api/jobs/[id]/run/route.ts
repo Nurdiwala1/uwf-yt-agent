@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { store } from "@/lib/store";
 import { runLiveStage } from "@/lib/worker";
 
-// Keep Run Live responsive: one durable pipeline stage per request.
+// Each request performs one durable pipeline stage. The worker owns the
+// single-flight lease so concurrent browser tabs cannot start duplicate jobs.
 export const maxDuration = 300;
 
 export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -13,25 +14,10 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     return NextResponse.json({ error: "This job is already complete", job }, { status: 409 });
   }
 
-  // The durable store lease is the single-flight guard. If another browser/tab
-  // is already executing this job, return its current state instead of starting
-  // a second provider request.
   try {
-    const claimed = await store.claim(id);
-    if (!claimed) {
-      const current = await store.get(id);
-      return NextResponse.json(
-        { job: current ?? job, running: true },
-        { headers: { "Cache-Control": "no-store" } },
-      );
-    }
-
-    const current = await store.get(id);
-    if (!current) return NextResponse.json({ error: "Job disappeared from the store." }, { status: 404 });
-
-    const result = await runLiveStage(current);
+    const result = await runLiveStage(job);
     return NextResponse.json(
-      { job: result, running: false },
+      { job: result },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
