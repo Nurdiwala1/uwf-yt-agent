@@ -3,9 +3,9 @@
 import { useEffect } from "react";
 import type { ContentJob } from "@/lib/types";
 
-// A queued job must never start by itself. Run Live is the explicit trigger.
-// Once a job has started, the runner continues one durable stage at a time.
-const terminal = new Set(["queued", "failed", "published", "scheduled"]);
+// Once the dashboard is open, the runner automatically starts the next queued
+// Short and continues one durable stage at a time until publish or failure.
+const terminal = new Set(["failed", "published", "scheduled"]);
 
 export function PipelineAutoRunner({ jobs }: { jobs: ContentJob[] }) {
   useEffect(() => {
