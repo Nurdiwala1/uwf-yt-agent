@@ -138,7 +138,18 @@ async function generateWithDeepgram(script: string): Promise<VoiceResponse> {
 export async function generateVoice(script: string) {
   if (!script.trim()) throw new Error("Voice generation received an empty script.");
 
-  const elevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const configuredElevenKey = process.env.ELEVENLABS_API_KEY?.trim();
+  // ElevenLabs API keys are different from voice IDs/key IDs. A valid API key
+  // starts with `sk_`. If a voice ID or key ID was accidentally pasted here,
+  // do not waste a request on ElevenLabs; use the configured Deepgram fallback.
+  const elevenKey = configuredElevenKey && /^sk_[A-Za-z0-9_-]+$/.test(configuredElevenKey)
+    ? configuredElevenKey
+    : undefined;
+
+  if (configuredElevenKey && !elevenKey) {
+    console.warn("[voice] ELEVENLABS_API_KEY is not a valid sk_ API key; skipping ElevenLabs and using Deepgram fallback.");
+  }
+
   if (elevenKey) {
     try {
       return await generateWithElevenLabs(script, elevenKey);
@@ -152,7 +163,7 @@ export async function generateVoice(script: string) {
     return await generateWithDeepgram(script);
   } catch (error) {
     const deepgramMessage = error instanceof Error ? error.message : "Unknown Deepgram TTS error";
-    if (!elevenKey) {
+    if (!configuredElevenKey) {
       throw new Error(`ElevenLabs is not configured and Deepgram TTS failed: ${deepgramMessage}`);
     }
     throw new Error(`All voice providers failed. ElevenLabs was unavailable and Deepgram TTS failed: ${deepgramMessage}`);
