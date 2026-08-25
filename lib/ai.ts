@@ -1,192 +1,29 @@
-type ResearchResult = { research: string; script: string; title: string; description: string; tags: string[]; seo: string };
-type Provider = "groq" | "openrouter" | "ollama";
-type GenerateOptions = { webSearch?: boolean; json?: boolean; modelName?: string; timeoutMs?: number; maxTokens?: number };
+import { z } from "zod";
+
 type UnknownRecord = Record<string, unknown>;
 
-const configuredProvider = (): "auto" | Provider => {
-  const value = (process.env.AI_PROVIDER || "auto").toLowerCase();
-  if (value === "groq" || value === "openrouter" || value === "ollama") return value;
-  return "auto";
+type ResearchResult = {
+  research: string;
+  script: string;
+  title: string;
+  description: string;
+  tags: string[];
+  seo: string;
 };
 
-const providerAvailability = (provider: Provider) => provider === "groq" ? Boolean(process.env.GROQ_API_KEY) : provider === "openrouter" ? Boolean(process.env.OPENROUTER_API_KEY) : Boolean(process.env.OLLAMA_BASE_URL);
-const providerOrder = (): Provider[] => {
-  const preferred = configuredProvider();
-  const all: Provider[] = ["groq", "openrouter", "ollama"];
-  return preferred === "auto" ? all : [preferred, ...all.filter(p => p !== preferred)];
-};
-
-const modelFor = (provider: Provider, options: GenerateOptions) => {
-  if (options.modelName) return options.modelName;
-  if (provider === "groq") return options.webSearch ? process.env.GROQ_RESEARCH_MODEL || "groq/compound-mini" : process.env.GROQ_MODEL || "openai/gpt-oss-120b";
-  if (provider === "openrouter") return process.env.OPENROUTER_MODEL || "openrouter/free";
-  return process.env.OLLAMA_MODEL || "llama3.2:3b";
-};
-
-const contentToText = (value: unknown): string | null => {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (Array.isArray(value)) {
-    const parts = value.map(item => {
-      if (typeof item === "string") return item;
-      if (item && typeof item === "object") {
-        const record = item as UnknownRecord;
-        return typeof record.text === "string" ? record.text : typeof record.content === "string" ? record.content : "";
-      }
-      return "";
-    }).filter(Boolean);
-    return parts.length ? parts.join("\n").trim() : null;
-  }
-  return null;
-};
-
-const parseResponseText = (data: unknown): string => {
-  if (!data || typeof data !== "object") throw new Error("AI provider returned an invalid response.");
-  const record = data as UnknownRecord;
-  const direct = contentToText(record.output_text);
-  if (direct) return direct;
-  const choices = Array.isArray(record.choices) ? record.choices : [];
-  const firstChoice = choices[0];
-  if (firstChoice && typeof firstChoice === "object") {
-    const choice = firstChoice as UnknownRecord;
-    const message = choice.message;
-    if (message && typeof message === "object") {
-      const msg = message as UnknownRecord;
-      const content = contentToText(msg.content) || contentToText(msg.reasoning_content) || contentToText(msg.reasoning);
-      if (content) return content;
-    }
-    const choiceText = contentToText(choice.text);
-    if (choiceText) return choiceText;
-  }
-  const ollamaMessage = record.message;
-  const ollamaText = ollamaMessage && typeof ollamaMessage === "object" ? contentToText((ollamaMessage as UnknownRecord).content) : null;
-  if (ollamaText) return ollamaText;
-  const responseText = contentToText(record.response);
-  if (responseText) return responseText;
-  throw new Error("AI provider returned no output text.");
-};
-
-const fetchWithTimeout = async (url: string, init: RequestInit, timeoutMs = 20_000) => {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-};
-
-async function requestGroq(input: string, options: GenerateOptions) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY is not configured.");
-  const primaryModel = modelFor("groq", options);
-  const models = primaryModel === "openai/gpt-oss-120b" ? [primaryModel, "llama-3.1-8b-instant"] : [primaryModel];
-  const errors: string[] = [];
-  for (const model of models) {
-    const body: Record<string, unknown> = { model, messages: [{ role: "user", content: input }] };
-    if (options.maxTokens) body.max_completion_tokens = options.maxTokens;
-    if (options.json) body.response_format = { type: "json_object" };
-    const response = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(body)
-    }, options.timeoutMs ?? 20_000);
-    if (response.ok) return parseResponseText(await response.json());
-    const errorText = await response.text();
-    errors.push(`${model} (${response.status}): ${errorText}`);
-    if (response.status !== 429) break;
-  }
-  throw new Error(`Groq request failed. ${errors.join(" | ")}`);
-}
-
-async function requestOpenRouter(input: string, options: GenerateOptions) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured.");
-  const body: Record<string, unknown> = { model: modelFor("openrouter", options), messages: [{ role: "user", content: input }] };
-  if (options.maxTokens) body.max_tokens = options.maxTokens;
-  if (options.json && process.env.OPENROUTER_JSON_MODE === "true") body.response_format = { type: "json_object" };
-  const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "https://uwf-yt-agent.vercel.app",
-      "X-Title": "UWF YT Agent"
-    },
-    body: JSON.stringify(body)
-  }, options.timeoutMs ?? 20_000);
-  if (!response.ok) throw new Error(`OpenRouter request failed (${response.status}): ${await response.text()}`);
-  return parseResponseText(await response.json());
-}
-
-async function requestOllama(input: string, options: GenerateOptions) {
-  const baseUrl = (process.env.OLLAMA_BASE_URL || "").replace(/\/$/, "");
-  if (!baseUrl) throw new Error("OLLAMA_BASE_URL is not configured.");
-  const body: Record<string, unknown> = {
-    model: modelFor("ollama", options),
-    messages: [{ role: "user", content: input }],
-    stream: false
-  };
-  if (options.json) body.format = "json";
-  const response = await fetchWithTimeout(`${baseUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  }, options.timeoutMs ?? 20_000);
-  if (!response.ok) throw new Error(`Ollama request failed (${response.status}): ${await response.text()}`);
-  return parseResponseText(await response.json());
-}
-
-async function requestProvider(provider: Provider, input: string, options: GenerateOptions) {
-  return provider === "groq" ? requestGroq(input, options) : provider === "openrouter" ? requestOpenRouter(input, options) : requestOllama(input, options);
-}
-
-async function generateContent(input: string, options: GenerateOptions = {}) {
-  const errors: string[] = [];
-  const providers = providerOrder().filter(providerAvailability);
-  if (!providers.length) {
-    throw new Error("No AI provider is configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or OLLAMA_BASE_URL in Vercel Environment Variables.");
-  }
-  for (const provider of providers) {
-    try {
-      return await requestProvider(provider, input, options);
-    } catch (error) {
-      errors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  throw new Error(`All AI providers failed. ${errors.join(" | ")}`);
-}
+const researchSchema = z.object({ research: z.string().min(1), script: z.string().min(1) });
 
 function extractJsonObject(text: string): string | null {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-  const first = cleaned.indexOf("{");
-  if (first < 0) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = first; i < cleaned.length; i++) {
-    const char = cleaned[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === "{") depth++;
-    if (char === "}") {
-      depth--;
-      if (depth === 0) return cleaned.slice(first, i + 1);
-    }
-  }
-  return null;
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  return text.slice(start, end + 1);
 }
 
-function parseMetadataJson(raw: string): UnknownRecord {
+function parseJsonCandidates(raw: string): UnknownRecord {
   const candidates = [raw.trim()];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1]?.trim();
+  if (fenced) candidates.push(fenced);
   const extracted = extractJsonObject(raw);
   if (extracted && extracted !== candidates[0]) candidates.push(extracted);
 
@@ -207,7 +44,10 @@ function normalizeMetadata(metadata: UnknownRecord, topic: string): ResearchResu
     ? metadata.description.trim()
     : `In this UWF video, we break down ${topic} with clear facts, key insights, and practical takeaways.`;
   const rawTags = Array.isArray(metadata.tags) ? metadata.tags : [];
-  const tags = rawTags.filter((tag): tag is string => typeof tag === "string" && tag.trim()).map(tag => tag.trim()).slice(0, 15);
+  const tags = rawTags
+    .filter((tag): tag is string => typeof tag === "string" && Boolean(tag.trim()))
+    .map(tag => tag.trim())
+    .slice(0, 15);
   if (!tags.length) tags.push(...topic.split(/[^a-zA-Z0-9]+/).filter(Boolean).slice(0, 10).map(word => word.toLowerCase()));
   const seo = typeof metadata.seo === "string" ? metadata.seo.trim() : `Primary keyword: ${topic}. Search intent: viewers looking for clear information and analysis about this topic.`;
   return { title, description, tags, seo };
@@ -218,50 +58,83 @@ function fallbackMetadata(topic: string): Omit<ResearchResult, "research" | "scr
   const words = cleanTopic.split(/[^a-zA-Z0-9]+/).filter(Boolean).slice(0, 10).map(word => word.toLowerCase());
   const tags = Array.from(new Set([cleanTopic, ...words, "finance", "investment", "crypto", "money", "UWF"])).slice(0, 15);
   return {
-    title: `${cleanTopic} Explained: What You Need to Know`,
-    description: `In this UWF video, we break down ${cleanTopic} with clear facts, important insights, and practical takeaways. Subscribe for more crypto, finance, investment, and earning content.`,
+    title: `The Truth About ${cleanTopic}`,
+    description: `A clear UWF breakdown of ${cleanTopic}, with key facts, practical insights, and important things viewers should know.`,
     tags,
-    seo: `Primary keyword: ${cleanTopic}. Search intent: viewers looking for an understandable explanation and useful insights about this topic.`
+    seo: `Primary keyword: ${cleanTopic}. Related: finance, investment, crypto, money, market analysis.`,
   };
+}
+
+async function callAI(prompt: string): Promise<string> {
+  const openRouterKey = process.env.OPENROUTER_API_KEY?.trim();
+  const groqKey = process.env.GROQ_API_KEY?.trim();
+  const openRouterModel = process.env.OPENROUTER_MODEL?.trim() || "openai/gpt-4o-mini";
+  const groqModel = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
+
+  const providers: Array<{ name: string; url: string; key?: string; model: string }> = [
+    { name: "openrouter", url: "https://openrouter.ai/api/v1/chat/completions", key: openRouterKey, model: openRouterModel },
+    { name: "groq", url: "https://api.groq.com/openai/v1/chat/completions", key: groqKey, model: groqModel },
+  ].filter(provider => Boolean(provider.key));
+
+  let lastError = "No AI provider is configured.";
+  for (const provider of providers) {
+    try {
+      const response = await fetch(provider.url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${provider.key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+        }),
+      });
+      const text = await response.text();
+      if (!response.ok) {
+        lastError = `${provider.name} failed (${response.status}): ${text}`;
+        continue;
+      }
+      const data = JSON.parse(text) as { choices?: Array<{ message?: { content?: unknown } }> };
+      const content = data.choices?.[0]?.message?.content;
+      if (typeof content === "string" && content.trim()) return content.trim();
+      lastError = `${provider.name} returned an empty response.`;
+    } catch (error) {
+      lastError = `${provider.name} request failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+    }
+  }
+  throw new Error(lastError);
 }
 
 export async function researchTopic(topic: string) {
-  const prompt = `Research this UWF YouTube long-form topic: ${topic}. Return a concise factual research brief with key facts, important numbers/dates, recent developments, and source names. Keep it under 700 words. Do not invent facts. If you do not know a current fact, clearly say that it needs verification.`;
-  return generateContent(prompt, { webSearch: false, timeoutMs: 20_000, maxTokens: 900 });
+  const prompt = `Research this topic for a UWF English-language YouTube finance/crypto/investment video. Return ONLY valid JSON with exactly one key: research. Topic: ${topic}`;
+  try {
+    const raw = await callAI(prompt);
+    const parsed = parseJsonCandidates(raw);
+    const result = researchSchema.safeParse(parsed);
+    if (result.success) return result.data.research;
+    if (typeof parsed.research === "string" && parsed.research.trim()) return parsed.research.trim();
+    return raw;
+  } catch {
+    return `Research summary for ${topic}: explain the core concept, recent context, major risks, practical implications, and what viewers should verify before making financial decisions.`;
+  }
 }
 
-export async function buildContent(topic: string, research: string): Promise<ResearchResult> {
-  const duration = "5-10 minutes";
-  const scriptOutput = await generateContent(`You are the UWF YouTube content producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nWrite only the production-ready English narration script. It must be factual, engaging, natural for a male voice, and easy to understand. Do not add title, description, tags, headings, stage directions, or markdown.`, { timeoutMs: 20_000, maxTokens: 1600 });
-
-  const metadataPrompt = `You are the UWF YouTube SEO producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nScript:\n${scriptOutput}\n\nReturn ONLY a single valid JSON object. Do not write any explanation, introduction, markdown, code fence, or text outside the JSON object. Use exactly these keys: title, description, tags, seo.\n- title: clickable but not misleading.\n- description: YouTube-ready description.\n- tags: array of 10-15 relevant keyword strings.\n- seo: briefly explain the primary keyword and search intent.\nThe first character of your response must be { and the last character must be }.`;
-
-  let metadata: UnknownRecord | null = null;
-  let metadataError = "";
-
+export async function buildContent(topic: string, research: string): Promise<Omit<ResearchResult, "research">> {
+  const prompt = `Create content for a UWF English male-narrated long-form YouTube video about ${topic}. Length target: 5-10 minutes. Research: ${research}. Return ONLY valid JSON with exactly these keys: script, title, description, tags, seo. The script must be natural spoken English and suitable for TTS. tags must be an array of strings.`;
+  let metadata: UnknownRecord = {};
+  let script = "";
   try {
-    const metadataOutput = await generateContent(metadataPrompt, { json: true, timeoutMs: 20_000, maxTokens: 900 });
-    metadata = parseMetadataJson(metadataOutput);
-  } catch (error) {
-    metadataError = error instanceof Error ? error.message : String(error);
+    const raw = await callAI(prompt);
+    metadata = parseJsonCandidates(raw);
+    if (typeof metadata.script === "string") script = metadata.script.trim();
+  } catch {
+    // Use deterministic fallbacks below.
   }
-
-  // A second strict attempt handles providers that ignore JSON mode on the first request.
-  if (!metadata) {
-    try {
-      const retryOutput = await generateContent(`Return ONLY valid JSON for this UWF YouTube video. No markdown and no extra text.\nTopic: ${topic}\nScript summary: ${scriptOutput.slice(0, 5000)}\nRequired schema: {"title":"string","description":"string","tags":["string"],"seo":"string"}.`, { json: true, timeoutMs: 20_000, maxTokens: 700 });
-      metadata = parseMetadataJson(retryOutput);
-    } catch (error) {
-      metadataError = `${metadataError}; retry: ${error instanceof Error ? error.message : String(error)}`;
-    }
+  if (!script) {
+    script = `Welcome to UWF. Today we are breaking down ${topic}. ${research}\n\nThe key takeaway is to understand the opportunity, the risks, and the information that still needs to be verified. Always research carefully before making financial decisions.`;
   }
-
-  const normalized = metadata ? normalizeMetadata(metadata, topic) : fallbackMetadata(topic);
-
-  return {
-    research,
-    script: scriptOutput,
-    ...normalized,
-    seo: metadataError && !metadata ? `${normalized.seo} Metadata AI fallback was used.` : normalized.seo
-  };
+  const normalized = normalizeMetadata(metadata, topic);
+  return { script, ...normalized };
 }
