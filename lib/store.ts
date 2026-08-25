@@ -4,36 +4,47 @@ import { dailySlots } from "./schedule";
 
 declare global { var uwfStore: { jobs: ContentJob[]; logs: JobLog[] } | undefined; }
 
-const now = new Date();
-const seedJob = (): ContentJob => ({
-  id: `seed-${now.toISOString().slice(0, 10)}`,
-  title: "Smart Investing: Today’s Crypto Setup",
-  topic: "Investment education",
-  format: "short",
-  state: "queued",
-  scheduledFor: dailySlots(now)[0].toISOString(),
-  createdAt: now.toISOString(),
-  attempts: 0,
-});
+function todaySeed(): ContentJob {
+  const now = new Date();
+  const slot = dailySlots(now)[0];
+  const dateKey = slot.toISOString().slice(0, 10);
+  return {
+    id: `short-${dateKey}`,
+    title: `UWF Daily Short — ${dateKey}`,
+    topic: "Crypto, finance, investment or earning education",
+    format: "short",
+    state: "queued",
+    scheduledFor: slot.toISOString(),
+    createdAt: now.toISOString(),
+    attempts: 0,
+  };
+}
 
-const memory = () => (global.uwfStore ??= {
-  jobs: [seedJob()],
-  logs: [{ id: "log-1", jobId: seedJob().id, level: "info", message: "Publishing job is ready to run.", createdAt: now.toISOString() }],
-});
+const memory = () => (global.uwfStore ??= { jobs: [], logs: [] });
 
-async function ensureDbSeed() {
-  const jobs = await db.jobs.list();
-  if (jobs.length) return;
-  const job = seedJob();
+async function ensureTodayJob() {
+  const slot = dailySlots(new Date())[0];
+  const dateKey = slot.toISOString().slice(0, 10);
+  const existing = await db.jobs.list();
+  if (existing.some((j) => j.id === `short-${dateKey}` || j.scheduledFor.slice(0, 10) === dateKey)) return existing;
+  const job = todaySeed();
   await db.jobs.insert(job);
-  await db.logs.insert({ id: crypto.randomUUID(), jobId: job.id, level: "info", message: "Publishing job is ready to run.", createdAt: new Date().toISOString() });
+  await db.logs.insert({ id: crypto.randomUUID(), jobId: job.id, level: "info", message: "Daily Shorts-only job created automatically.", createdAt: new Date().toISOString() });
+  return [job, ...existing];
 }
 
 export const store = {
   list: async () => {
-    if (!persistenceConfigured()) return memory().jobs.filter(j => j.format === "short").sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
-    await ensureDbSeed();
-    return (await db.jobs.list()).filter(j => j.format === "short");
+    if (!persistenceConfigured()) {
+      const m = memory();
+      const slot = dailySlots(new Date())[0];
+      const dateKey = slot.toISOString().slice(0, 10);
+      if (!m.jobs.some((j) => j.scheduledFor.slice(0, 10) === dateKey)) {
+        const job = todaySeed(); m.jobs.push(job); m.logs.unshift({ id: crypto.randomUUID(), jobId: job.id, level: "info", message: "Daily Shorts-only job created automatically.", createdAt: new Date().toISOString() });
+      }
+      return m.jobs.filter((j) => j.format === "short").sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
+    }
+    return (await ensureTodayJob()).filter((j) => j.format === "short").sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
   },
   get: async (id: string) => persistenceConfigured() ? db.jobs.get(id) : memory().jobs.find((j) => j.id === id),
   create: async (input: Pick<ContentJob, "title" | "topic" | "scheduledFor"> & { format?: "short" | "long" }) => {
@@ -42,8 +53,7 @@ export const store = {
     memory().jobs.push(job); return job;
   },
   update: async (id: string, state: JobState, error?: string) => {
-    const current = await store.get(id);
-    if (!current) return undefined;
+    const current = await store.get(id); if (!current) return undefined;
     const attempts = state === "scheduled" || state === "published" ? current.attempts + 1 : current.attempts;
     const updated = { state, error, attempts } satisfies Partial<ContentJob>;
     if (persistenceConfigured()) return db.jobs.update(id, updated);
@@ -55,6 +65,7 @@ export const store = {
     Object.assign(job, patch); return job;
   },
   claim: async (id: string) => persistenceConfigured() ? db.jobs.claim(id) : true,
+  release: async (id: string) => persistenceConfigured() ? db.jobs.release(id) : true,
   logs: async (jobId?: string) => persistenceConfigured() ? db.logs.list(jobId) : memory().logs.filter((log) => !jobId || log.jobId === jobId),
   log: async (jobId: string, message: string, level: JobLog["level"] = "info") => {
     const log: JobLog = { id: crypto.randomUUID(), jobId, message, level, createdAt: new Date().toISOString() };
