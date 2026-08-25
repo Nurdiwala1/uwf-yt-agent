@@ -75,7 +75,6 @@ async function requestOpenRouter(input: string, options: GenerateOptions) {
   const apiKey = process.env.OPENROUTER_API_KEY; if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured.");
   const body: Record<string, unknown> = { model: modelFor("openrouter", options), messages: [{ role: "user", content: input }] };
   if (options.maxTokens) body.max_tokens = options.maxTokens;
-  // Some free OpenRouter models reject response_format; the prompt still requires JSON.
   if (options.json && process.env.OPENROUTER_JSON_MODE === "true") body.response_format = { type: "json_object" };
   const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "https://uwf-yt-agent.vercel.app", "X-Title": "UWF YT Agent" }, body: JSON.stringify(body) }, options.timeoutMs ?? 20_000);
   if (!response.ok) throw new Error(`OpenRouter request failed (${response.status}): ${await response.text()}`);
@@ -85,6 +84,21 @@ async function requestOllama(input: string, options: GenerateOptions) { const ba
 async function requestProvider(provider: Provider, input: string, options: GenerateOptions) { return provider === "groq" ? requestGroq(input, options) : provider === "openrouter" ? requestOpenRouter(input, options) : requestOllama(input, options); }
 async function generateContent(input: string, options: GenerateOptions = {}) { const errors: string[] = []; const providers = providerOrder().filter(providerAvailability); if (!providers.length) throw new Error("No AI provider is configured. Add GROQ_API_KEY, OPENROUTER_API_KEY, or OLLAMA_BASE_URL in Vercel Environment Variables."); for (const provider of providers) { try { return await requestProvider(provider, input, options); } catch (error) { errors.push(`${provider}: ${error instanceof Error ? error.message : String(error)}`); } } throw new Error(`All AI providers failed. ${errors.join(" | ")}`); }
 
+function parseMetadataJson(raw: string): UnknownRecord {
+  const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const candidates = [text];
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) candidates.push(text.slice(first, last + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed: unknown = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as UnknownRecord;
+    } catch { /* Try the next candidate. */ }
+  }
+  throw new Error("AI metadata response was not valid JSON. The provider returned extra text instead of a JSON object.");
+}
+
 export async function researchTopic(topic: string) {
   const prompt = `Research this UWF YouTube long-form topic: ${topic}. Return a concise factual research brief with key facts, important numbers/dates, recent developments, and source names. Keep it under 700 words. Do not invent facts. If you do not know a current fact, clearly say that it needs verification.`;
   return generateContent(prompt, { webSearch: false, timeoutMs: 20_000, maxTokens: 900 });
@@ -92,9 +106,9 @@ export async function researchTopic(topic: string) {
 export async function buildContent(topic: string, research: string): Promise<ResearchResult> {
   const duration = "5-10 minutes";
   const scriptOutput = await generateContent(`You are the UWF YouTube content producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nWrite only the production-ready English narration script. It must be factual, engaging, natural for a male voice, and easy to understand. Do not add title, description, tags, headings, stage directions, or markdown.`, { timeoutMs: 20_000, maxTokens: 1600 });
-  const metadataOutput = await generateContent(`You are the UWF YouTube SEO producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nScript:\n${scriptOutput}\n\nReturn ONLY valid JSON with exactly these keys: title, description, tags, seo.\n- title: clickable without misleading claims.\n- description: YouTube-ready description.\n- tags: array of 10-15 relevant keywords.\n- seo: briefly explain the primary keyword, search intent, and why the title/description match it.`, { json: true, timeoutMs: 20_000, maxTokens: 900 });
-  const cleaned = metadataOutput.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim(); const parsed: unknown = JSON.parse(cleaned); if (!parsed || typeof parsed !== "object") throw new Error("AI metadata response is not valid JSON.");
-  const metadata = parsed as UnknownRecord; const title = metadata.title; const description = metadata.description; const tags = metadata.tags; const seo = metadata.seo;
+  const metadataOutput = await generateContent(`You are the UWF YouTube SEO producer. Topic: ${topic}. Target duration: ${duration}.\n\nResearch:\n${research}\n\nScript:\n${scriptOutput}\n\nReturn ONLY one valid JSON object and absolutely no explanation, no markdown, and no text before or after it. The JSON must contain exactly these keys: title, description, tags, seo.\n- title: clickable without misleading claims.\n- description: YouTube-ready description.\n- tags: array of 10-15 relevant keywords.\n- seo: briefly explain the primary keyword, search intent, and why the title/description match it.`, { json: true, timeoutMs: 20_000, maxTokens: 900 });
+  const metadata = parseMetadataJson(metadataOutput);
+  const title = metadata.title; const description = metadata.description; const tags = metadata.tags; const seo = metadata.seo;
   if (typeof title !== "string" || typeof description !== "string" || !Array.isArray(tags)) throw new Error("AI content response is incomplete.");
   return { research, script: scriptOutput, title, description, tags: tags.filter((tag): tag is string => typeof tag === "string"), seo: typeof seo === "string" ? seo : "" };
 }
